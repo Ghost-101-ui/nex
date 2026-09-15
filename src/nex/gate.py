@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ipaddress
-import os
 from urllib.parse import urlparse
 
 from .models import Phase, Risk, Tool
@@ -56,8 +55,6 @@ class Gate:
         target = args.get("target") or args.get("domain")
         if target and not in_scope(str(target), config["scope"]):
             raise GateError(f"Target {target!r} is outside the configured authorized lab scope.")
-        if target and os.environ.get("NEX_LAB_ACK") != "I_AM_AUTHORIZED":
-            raise GateError("Set NEX_LAB_ACK=I_AM_AUTHORIZED after confirming you are authorized.")
         current = Phase(config.get("phase", "recon"))
         if tool.phase not in (current, Phase.UTILITY):
             raise GateError(f"{tool.name} belongs to {tool.phase.value}; current phase is {current.value}.")

@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Offline, gated security-tool orchestration for authorized labs"
 requires-python = ">=3.10"
 authors = [{name = "CyberEDT NEX"}]
+dependencies = ["questionary>=2.0", "rich>=13.0"]
 
 [project.scripts]
 nex = "nex.cli:main"

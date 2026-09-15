@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 from pathlib import Path
+import shutil
+import subprocess
 from typing import Any
 
 CONFIG_NAME = "nex.config.json"
@@ -21,22 +24,57 @@ def load_config() -> dict[str, Any]:
     return data
 
 
-def initialize(scope: list[str]) -> Path:
+def private_scopes() -> list[str]:
+    return ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
+
+def vpn_scopes() -> list[str]:
+    """Discover tunnel interfaces on Linux without requiring a network call."""
+    if not shutil.which("ip"):
+        return []
+    try:
+        data = json.loads(subprocess.check_output(["ip", "-j", "address"], text=True, stderr=subprocess.DEVNULL))
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        return []
+    scopes: list[str] = []
+    for interface in data:
+        name = interface.get("ifname", "")
+        if not (name.startswith(("tun", "tap", "wg", "ppp"))):
+            continue
+        for address in interface.get("addr_info", []):
+            if address.get("family") == "inet":
+                scopes.append(str(ipaddress.ip_interface(f"{address['local']}/{address['prefixlen']}").network))
+    return scopes
+
+
+def initialize(scope: list[str] | None = None, authorized: bool = False) -> tuple[Path, list[str]]:
     path = config_path()
+    detected = [*private_scopes(), *vpn_scopes()]
+    requested = scope or []
+    if requested and not authorized:
+        for item in requested:
+            try:
+                is_private = ipaddress.ip_network(item, strict=False).is_private
+            except ValueError:
+                raise ValueError("Adding a non-private scope requires --authorized.") from None
+            if not is_private:
+                raise ValueError("Adding a public scope requires --authorized.")
     if path.exists():
-        raise ValueError(f"{path} already exists; edit it deliberately rather than overwriting it.")
-    data = {
-        "scope": scope,
-        "phase": "recon",
-        "timeouts": {"default": 120, "nikto_scan": 600},
-        "models": {"reasoner": "qwen3:0.6b", "tool_caller": None},
-    }
+        data = load_config()
+    else:
+        data = {"scope": [], "phase": "recon", "timeouts": {"default": 120, "nikto_scan": 600},
+                "models": {"reasoner": "qwen3:0.6b", "tool_caller": None}}
+    for item in [*detected, *requested]:
+        if item not in data["scope"]:
+            data["scope"].append(item)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return path
+    return path, detected
 
 
-def add_scope(scope_item: str) -> dict[str, Any]:
+def add_scope(scope_item: str, authorized: bool = False) -> dict[str, Any]:
     """Add one deliberately supplied authorized lab scope without replacing existing scope."""
+    if not authorized:
+        raise ValueError("Refusing to change scope without an authorization acknowledgement.")
     data = load_config()
     if scope_item not in data["scope"]:
         data["scope"].append(scope_item)

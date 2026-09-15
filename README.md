@@ -4,12 +4,13 @@ NEX is a local, offline-friendly controller for **authorized CTF and lab** work 
 
 ## Current v0.1
 
-- `nex init` creates a local lab configuration and session store.
-- `nex status` checks the configuration, registered tools, and Ollama availability.
-- `nex tools` displays the fixed registry.
-- `nex run TOOL --args JSON` validates and executes a registered wrapper.
-- All target-facing commands require `NEX_LAB_ACK=I_AM_AUTHORIZED` and a target in `nex.config.json`.
-- High-impact actions are intentionally not included in this first executable slice.
+- `nex init` is idempotent and automatically trusts RFC1918 lab ranges plus any detected Linux tunnel subnet (`tun*`, `wg*`, `tap*`, `ppp*`).
+- Bare `nex` opens a small arrow-key menu; manual menu/flag use makes no model call.
+- `nex run` accepts normal flags, e.g. `--target` and `--quick`; JSON remains an advanced escape hatch.
+- `nex quick TARGET` runs the SAFE starter chain and records a session log.
+- `nex report` writes a Markdown report from the session log, including possible flag matches.
+- Public scope additions require one explicit acknowledgement: `nex init TARGET --authorized`.
+- High-impact actions and the Ollama autonomous loop are intentionally not included in this first executable slice.
 
 This is not a scanner for systems you do not own or lack written authorization to test.
 
@@ -19,22 +20,20 @@ This is not a scanner for systems you do not own or lack written authorization t
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e .
-nex init --scope 10.10.10.0/24
+nex init
 nex status
-export NEX_LAB_ACK=I_AM_AUTHORIZED
-nex run nmap_scan --args '{"target":"10.10.10.5","scan_type":"quick"}'
+nex run nmap_scan --target 10.10.10.5 --quick
+# Or, for a newly assigned authorized CTF target:
+nex quick 10.10.10.5
 ```
 
-`nex init` accepts one or more comma-separated IPs, CIDRs, or domains. Keep the scope narrowly limited to the lab allocation.
-
-To review or add a later, separately authorized lab target without replacing the original scope:
+For an authorized public target that is not detected from your VPN, acknowledge it as a scope explicitly:
 
 ```bash
-nex config show
-nex config add-scope 10.10.10.5 --authorized
+nex init TARGET --authorized
 ```
 
-`nex help` and `nex --help` both show command help.
+Use `nex help` (or `nex --help`) for command help, `nex config show` to inspect scope, and `nex report` after a session.
 
 ## Architecture boundary
 

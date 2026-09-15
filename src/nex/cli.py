@@ -5,55 +5,170 @@ import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+from typing import Any
 
+from . import __version__
 from .config import add_scope, config_path, initialize, load_config
 from .executor import execute
-from .gate import Gate, GateError
+from .gate import Gate, GateError, in_scope
 from .lens import summarize
+from .models import Phase
 from .registry import TOOLS
+from .session import load as load_session
+from .session import markdown_report, record
+
+REASONER_MODEL = "qwen3:0.6b"
+TOOL_CALLER_MODEL = "hf.co/tinybiggames/functiongemma-270m-it-q8_0:Q8_0"
+
+
+def _ollama_models() -> set[str]:
+    if not shutil.which("ollama"):
+        return set()
+    try:
+        output = subprocess.check_output(["ollama", "list"], text=True, stderr=subprocess.DEVNULL)
+        return {line.split()[0] for line in output.splitlines()[1:] if line.split()}
+    except (OSError, subprocess.CalledProcessError):
+        return set()
+
+
+def _web(value: str) -> str:
+    return value if "://" in value else f"http://{value}"
+
+
+def _offer_model(model: str) -> None:
+    """Pull only after an interactive affirmative answer; never on manual scans."""
+    if model in _ollama_models():
+        print(f"[ok] {model} found")
+        return
+    if not shutil.which("ollama"):
+        print(f"[!] {model} unavailable because Ollama is not installed")
+        return
+    if not sys.stdin.isatty():
+        print(f"[!] {model} not installed; run 'ollama pull {model}' when online")
+        return
+    if input(f"[?] {model} is missing. Pull it now? [y/N] ").strip().lower() in {"y", "yes"}:
+        subprocess.run(["ollama", "pull", model], check=False)
+
+
+def _flat_args(ns: argparse.Namespace) -> dict[str, Any]:
+    if ns.args:
+        parsed = json.loads(ns.args)
+        if not isinstance(parsed, dict): raise ValueError("--args must be a JSON object.")
+        return parsed
+    if ns.tool == "nmap_scan":
+        scan = "full" if ns.full else "udp" if ns.udp else "quick"
+        return {k: v for k, v in {"target": ns.target, "scan_type": scan, "ports": ns.ports}.items() if v is not None}
+    if ns.tool in {"whatweb_scan", "nikto_scan", "gobuster_dir"}:
+        args = {"target": _web(ns.target)}
+        if ns.tool == "gobuster_dir": args["wordlist"] = ns.wordlist
+        return args
+    if ns.tool == "dns_enum": return {"domain": ns.domain or ns.target, "mode": ns.mode}
+    if ns.tool == "service_probe": return {"target": ns.target, "port": ns.port}
+    if ns.tool == "searchsploit_query": return {k: v for k, v in {"service_name": ns.service_name, "version": ns.version}.items() if v}
+    raise ValueError("Use --args for this tool.")
+
+
+def _run(name: str, args: dict[str, Any], config: dict[str, Any]) -> None:
+    tool = TOOLS[name]
+    Gate().authorize(tool, args, config)
+    timeout = int(config.get("timeouts", {}).get(tool.name, config.get("timeouts", {}).get("default", 120)))
+    code, output = execute(tool, args, timeout)
+    print(f"✓ {tool.name} (exit {code})")
+    print("\n".join(summarize(tool.name, output)))
+    flags = record(tool.name, args, code, output)
+    if flags: print("\n[!] possible flag found: " + ", ".join(flags))
+
+
+def _status(as_json: bool) -> None:
+    config, session, models = load_config(), load_session(), _ollama_models()
+    if as_json:
+        print(json.dumps({"version": __version__, "config": config, "models": sorted(models), "session": session}, indent=2)); return
+    reasoner = config["models"]["reasoner"]
+    print(f"NEX v{__version__}\n{'-' * 30}")
+    print(f"Reasoner:        {reasoner:<20} {'READY' if reasoner in models else 'NOT INSTALLED'}")
+    print(f"Tool-caller:     {'enabled' if config['models'].get('tool_caller') else 'not enabled'}")
+    print(f"Scope:           {', '.join(config['scope'])}\nPhase:           {config['phase']}")
+    print(f"Tools available: {len(TOOLS)} SAFE wrappers\nSession log:     {len(session['actions'])} actions run, {len(session['flags'])} possible flags")
+
+
+def _interactive() -> None:
+    config, session = load_config(), load_session()
+    try: import questionary
+    except ImportError: raise RuntimeError("Interactive mode requires questionary. Run 'pip install -e .' to install dependencies.")
+    print(f"CyberEDT NEX | scope: {', '.join(config['scope'])} | phase: {config['phase']}")
+    choice = questionary.select("What do you want to do:", choices=["Run a recon scan", "Run enumeration", "View findings so far", "Quit"]).ask()
+    if not choice or choice == "Quit": return
+    if choice == "View findings so far": print(json.dumps(session, indent=2)); return
+    phase = Phase.RECON if choice == "Run a recon scan" else Phase.ENUMERATION
+    names = [name for name, tool in TOOLS.items() if tool.phase is phase]
+    name = questionary.select(f"{phase.value.title()} tool:", choices=names + ["< back"]).ask()
+    if not name or name == "< back": return
+    target = questionary.text("Target:", default=session.get("last_target") or "").ask()
+    if not target: return
+    if not in_scope(target, config["scope"]):
+        if not questionary.confirm(f"{target} is outside scope. Add it as an authorized target?", default=False).ask(): return
+        add_scope(target, authorized=True); config = load_config()
+    args: dict[str, Any] = {"target": target}
+    if name == "nmap_scan": args["scan_type"] = questionary.select("Scan type:", choices=["quick", "full", "udp"]).ask()
+    elif name in {"whatweb_scan", "nikto_scan", "gobuster_dir"}: args["target"] = _web(target)
+    if name == "gobuster_dir": args["wordlist"] = questionary.select("Wordlist:", choices=["small", "medium", "large"]).ask()
+    if name == "dns_enum": args = {"domain": target, "mode": "subdomains"}
+    if name == "service_probe": args["port"] = int(questionary.text("Port:", default="80").ask() or "80")
+    _run(name, args, config)
 
 
 def main() -> None:
-    # Make the familiar `nex help` spelling equivalent to `nex --help`.
-    if len(sys.argv) > 1 and sys.argv[1] == "help":
-        sys.argv[1:] = ["--help"]
+    if len(sys.argv) == 1:
+        try: _interactive()
+        except (ValueError, GateError, RuntimeError) as exc: print(f"NEX blocked: {exc}", file=sys.stderr)
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "help": sys.argv[1:] = ["--help"]
     parser = argparse.ArgumentParser(prog="nex", description="Gated orchestration for authorized security labs")
     subs = parser.add_subparsers(dest="command", required=True)
-    init = subs.add_parser("init"); init.add_argument("--scope", required=True, help="Comma-separated authorized IP/CIDR/domain scope")
-    subs.add_parser("status"); subs.add_parser("tools")
-    config = subs.add_parser("config", help="Review or deliberately extend the authorized lab scope")
-    config_subs = config.add_subparsers(dest="config_command", required=True)
-    config_subs.add_parser("show", help="Show the current local configuration")
-    add_scope_parser = config_subs.add_parser("add-scope", help="Add one IP, CIDR, or domain you are authorized to test")
-    add_scope_parser.add_argument("scope", help="Exact authorized IP, CIDR, or domain")
-    add_scope_parser.add_argument("--authorized", action="store_true", help="Required acknowledgement of authorization")
-    run = subs.add_parser("run"); run.add_argument("tool", choices=sorted(TOOLS)); run.add_argument("--args", required=True, help="JSON arguments")
+    init = subs.add_parser("init", help="Auto-detect lab scope and refresh configuration")
+    init.add_argument("scope", nargs="?"); init.add_argument("--authorized", action="store_true"); init.add_argument("--dual", action="store_true")
+    status = subs.add_parser("status"); status.add_argument("--json", action="store_true")
+    subs.add_parser("tools"); subs.add_parser("report", help="Write nex-report.md from session memory")
+    config_parser = subs.add_parser("config"); config_subs = config_parser.add_subparsers(dest="config_command", required=True)
+    config_subs.add_parser("show")
+    scope_parser = config_subs.add_parser("add-scope"); scope_parser.add_argument("scope"); scope_parser.add_argument("--authorized", action="store_true")
+    quick = subs.add_parser("quick", help="Run SAFE recon and enumeration starter chain"); quick.add_argument("target")
+    run = subs.add_parser("run", help="Run a registered tool with normal flags")
+    run.add_argument("tool", choices=sorted(TOOLS)); run.add_argument("--args"); run.add_argument("--target"); run.add_argument("--domain"); run.add_argument("--ports"); run.add_argument("--port", type=int)
+    run.add_argument("--quick", action="store_true"); run.add_argument("--full", action="store_true"); run.add_argument("--udp", action="store_true")
+    run.add_argument("--wordlist", choices=["small", "medium", "large"], default="small"); run.add_argument("--mode", choices=["subdomains", "records"], default="subdomains")
+    run.add_argument("--service-name"); run.add_argument("--version")
     ns = parser.parse_args()
     try:
         if ns.command == "init":
-            path = initialize([x.strip() for x in ns.scope.split(",") if x.strip()])
-            print(f"Created {path}. Review the scope before running tools."); return
+            path, detected = initialize([ns.scope] if ns.scope else None, ns.authorized)
+            print("NEX SETUP\n" + "-" * 30)
+            print(f"[ok] Ollama {'detected' if shutil.which('ollama') else 'not found'}")
+            print(f"[ok] Session scope refreshed: {', '.join(detected) if detected else 'RFC1918 private ranges'}")
+            _offer_model(REASONER_MODEL)
+            if ns.dual: _offer_model(TOOL_CALLER_MODEL)
+            print(f"[ok] Config: {path}\nNEX is ready. Run 'nex quick <target>' or bare 'nex' for the menu."); return
         if ns.command == "tools":
             for tool in TOOLS.values(): print(f"{tool.name:18} {tool.phase.value:14} {tool.risk.value}")
             return
-        if ns.command == "status":
-            config = load_config()
-            print(f"config: {config_path()}\nscope: {', '.join(config['scope'])}\nphase: {config['phase']}\nregistered tools: {len(TOOLS)}\nollama: {'available' if shutil.which('ollama') else 'not found'}")
-            return
+        if ns.command == "status": _status(ns.json); return
         if ns.command == "config":
-            if ns.config_command == "show":
-                print(json.dumps(load_config(), indent=2)); return
-            if not ns.authorized:
-                raise ValueError("Refusing to change scope without --authorized.")
-            data = add_scope(ns.scope)
-            print(f"Added authorized scope: {ns.scope}\nCurrent scope: {', '.join(data['scope'])}")
+            if ns.config_command == "show": print(json.dumps(load_config(), indent=2))
+            else: add_scope(ns.scope, ns.authorized); print(f"Added authorized scope: {ns.scope}")
             return
-        config, tool, args = load_config(), TOOLS[ns.tool], json.loads(ns.args)
-        Gate().authorize(tool, args, config)
-        code, output = execute(tool, args, int(config.get("timeouts", {}).get(tool.name, config.get("timeouts", {}).get("default", 120))))
-        print(f"✓ {tool.name} (exit {code})")
-        print("\n".join(summarize(tool.name, output)))
-        print("\nRaw output is captured by this process; persistent session logging is the next milestone.")
+        if ns.command == "report":
+            path = Path.cwd() / "nex-report.md"; path.write_text(markdown_report(load_config()), encoding="utf-8"); print(f"Wrote {path}"); return
+        if ns.command == "quick":
+            config = load_config()
+            if not in_scope(ns.target, config["scope"]): raise GateError("Target is outside scope. Run 'nex init <target> --authorized' first.")
+            _run("nmap_scan", {"target": ns.target, "scan_type": "quick"}, config)
+            _run("nmap_scan", {"target": ns.target, "scan_type": "full"}, config)
+            _run("whatweb_scan", {"target": _web(ns.target)}, config)
+            config["phase"] = "enumeration"; config_path().write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+            _run("gobuster_dir", {"target": _web(ns.target), "wordlist": "small"}, config)
+            print("Quick chain complete. No CONFIRM-tier action was run."); return
+        _run(ns.tool, _flat_args(ns), load_config())
     except (ValueError, GateError, RuntimeError, subprocess.TimeoutExpired) as exc:
         print(f"NEX blocked: {exc}", file=sys.stderr); raise SystemExit(2)
 
