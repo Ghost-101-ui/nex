@@ -1,0 +1,6 @@
+{
+  "scope": ["10.10.10.0/24"],
+  "phase": "recon",
+  "timeouts": {"default": 120, "nikto_scan": 600},
+  "models": {"reasoner": "qwen3:0.6b", "tool_caller": null}
+}
