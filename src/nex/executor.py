@@ -17,6 +17,8 @@ def build_command(tool: Tool, args: dict[str, Any]) -> list[str]:
     if tool.name == "gobuster_dir":
         words = {"small": "/usr/share/wordlists/dirb/common.txt", "medium": "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt", "large": "/usr/share/wordlists/dirbuster/directory-list-2.3-big.txt"}
         return ["gobuster", "dir", "-u", args["target"], "-w", words[args["wordlist"]], "--no-error"]
+    if tool.name == "smb_enum": return ["nmap", "-p", "139,445", "--script", "smb-os-discovery,smb-enum-shares", args["target"]]
+    if tool.name == "ftp_anon_check": return ["nmap", "-p", "21", "--script", "ftp-anon", args["target"]]
     if tool.name == "service_probe": return ["nmap", "-sV", "-p", str(args["port"]), args["target"]]
     if tool.name == "searchsploit_query": return ["searchsploit", args["service_name"], *( [args["version"]] if args.get("version") else [])]
     raise ValueError(f"No executor is registered for {tool.name}.")

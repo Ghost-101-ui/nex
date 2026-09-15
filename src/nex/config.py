@@ -28,6 +28,14 @@ def private_scopes() -> list[str]:
     return ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 
 
+def is_auto_trusted_scope(item: str) -> bool:
+    """RFC1918 is convenient for labs; every other scope needs ownership confirmation."""
+    try:
+        return ipaddress.ip_network(item, strict=False).is_private
+    except ValueError:
+        return False
+
+
 def vpn_scopes() -> list[str]:
     """Discover tunnel interfaces on Linux without requiring a network call."""
     if not shutil.which("ip"):
@@ -53,16 +61,12 @@ def initialize(scope: list[str] | None = None, authorized: bool = False) -> tupl
     requested = scope or []
     if requested and not authorized:
         for item in requested:
-            try:
-                is_private = ipaddress.ip_network(item, strict=False).is_private
-            except ValueError:
-                raise ValueError("Adding a non-private scope requires --authorized.") from None
-            if not is_private:
+            if not is_auto_trusted_scope(item):
                 raise ValueError("Adding a public scope requires --authorized.")
     if path.exists():
         data = load_config()
     else:
-        data = {"scope": [], "phase": "recon", "timeouts": {"default": 120, "nikto_scan": 600},
+        data = {"scope": [], "phase": "recon", "phase_history": [], "timeouts": {"default": 120, "nikto_scan": 600},
                 "models": {"reasoner": "qwen3:0.6b", "tool_caller": None}}
     for item in [*detected, *requested]:
         if item not in data["scope"]:
@@ -73,7 +77,7 @@ def initialize(scope: list[str] | None = None, authorized: bool = False) -> tupl
 
 def add_scope(scope_item: str, authorized: bool = False) -> dict[str, Any]:
     """Add one deliberately supplied authorized lab scope without replacing existing scope."""
-    if not authorized:
+    if not is_auto_trusted_scope(scope_item) and not authorized:
         raise ValueError("Refusing to change scope without an authorization acknowledgement.")
     data = load_config()
     if scope_item not in data["scope"]:

@@ -56,7 +56,8 @@ class Gate:
         if target and not in_scope(str(target), config["scope"]):
             raise GateError(f"Target {target!r} is outside the configured authorized lab scope.")
         current = Phase(config.get("phase", "recon"))
-        if tool.phase not in (current, Phase.UTILITY):
+        order = {Phase.RECON: 0, Phase.ENUMERATION: 1, Phase.EXPLOITATION: 2, Phase.POST_EXPLOIT: 3}
+        if tool.phase is not Phase.UTILITY and order.get(tool.phase, 99) > order.get(current, -1):
             raise GateError(f"{tool.name} belongs to {tool.phase.value}; current phase is {current.value}.")
         if tool.risk is Risk.CONFIRM and not confirmed:
             raise GateError("Confirmation required for this action.")

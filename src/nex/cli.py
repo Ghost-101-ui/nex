@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .config import add_scope, config_path, initialize, load_config
+from .config import add_scope, config_path, initialize, is_auto_trusted_scope, load_config
 from .executor import execute
 from .gate import Gate, GateError, in_scope
 from .lens import summarize
@@ -51,6 +51,19 @@ def _offer_model(model: str) -> None:
         subprocess.run(["ollama", "pull", model], check=False)
 
 
+def _confirm_public_scope(target: str, authorized: bool, ownership: bool) -> None:
+    """A public target needs two explicit command flags and exact retyping."""
+    if is_auto_trusted_scope(target):
+        return
+    if not (authorized and ownership):
+        raise ValueError("Public scope requires both --i-own-this and --authorized.")
+    if not sys.stdin.isatty():
+        raise ValueError("Public scope confirmation must be completed in an interactive terminal.")
+    typed = input(f"Type the exact target to confirm authorization ({target}): ").strip()
+    if typed != target:
+        raise ValueError("Target confirmation did not match; scope was not changed.")
+
+
 def _flat_args(ns: argparse.Namespace) -> dict[str, Any]:
     if ns.args:
         parsed = json.loads(ns.args)
@@ -65,6 +78,7 @@ def _flat_args(ns: argparse.Namespace) -> dict[str, Any]:
         return args
     if ns.tool == "dns_enum": return {"domain": ns.domain or ns.target, "mode": ns.mode}
     if ns.tool == "service_probe": return {"target": ns.target, "port": ns.port}
+    if ns.tool in {"smb_enum", "ftp_anon_check"}: return {"target": ns.target}
     if ns.tool == "searchsploit_query": return {k: v for k, v in {"service_name": ns.service_name, "version": ns.version}.items() if v}
     raise ValueError("Use --args for this tool.")
 
@@ -74,9 +88,18 @@ def _run(name: str, args: dict[str, Any], config: dict[str, Any]) -> None:
     Gate().authorize(tool, args, config)
     timeout = int(config.get("timeouts", {}).get(tool.name, config.get("timeouts", {}).get("default", 120)))
     code, output = execute(tool, args, timeout)
+    summary = summarize(tool.name, output)
     print(f"✓ {tool.name} (exit {code})")
-    print("\n".join(summarize(tool.name, output)))
-    flags = record(tool.name, args, code, output)
+    print("\n".join(summary))
+    flags = record(tool.name, args, code, output, config["phase"], summary)
+    history = config.setdefault("phase_history", [])
+    history.append({"tool": tool.name, "phase": tool.phase.value, "exit_code": code})
+    if tool.phase is Phase.RECON and config["phase"] == Phase.RECON:
+        config["phase"] = Phase.ENUMERATION
+    elif tool.phase is Phase.ENUMERATION and config["phase"] == Phase.ENUMERATION:
+        successful_enum = sum(1 for item in history if item["phase"] == Phase.ENUMERATION and item["exit_code"] == 0)
+        if successful_enum >= 2: config["phase"] = Phase.EXPLOITATION
+    config_path().write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     if flags: print("\n[!] possible flag found: " + ", ".join(flags))
 
 
@@ -107,8 +130,8 @@ def _interactive() -> None:
     target = questionary.text("Target:", default=session.get("last_target") or "").ask()
     if not target: return
     if not in_scope(target, config["scope"]):
-        if not questionary.confirm(f"{target} is outside scope. Add it as an authorized target?", default=False).ask(): return
-        add_scope(target, authorized=True); config = load_config()
+        print("Target is outside the authorized scope. For public targets, use: nex init <target> --i-own-this --authorized")
+        return
     args: dict[str, Any] = {"target": target}
     if name == "nmap_scan": args["scan_type"] = questionary.select("Scan type:", choices=["quick", "full", "udp"]).ask()
     elif name in {"whatweb_scan", "nikto_scan", "gobuster_dir"}: args["target"] = _web(target)
@@ -127,12 +150,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="nex", description="Gated orchestration for authorized security labs")
     subs = parser.add_subparsers(dest="command", required=True)
     init = subs.add_parser("init", help="Auto-detect lab scope and refresh configuration")
-    init.add_argument("scope", nargs="?"); init.add_argument("--authorized", action="store_true"); init.add_argument("--dual", action="store_true")
+    init.add_argument("scope", nargs="?"); init.add_argument("--authorized", action="store_true"); init.add_argument("--i-own-this", action="store_true"); init.add_argument("--dual", action="store_true")
     status = subs.add_parser("status"); status.add_argument("--json", action="store_true")
     subs.add_parser("tools"); subs.add_parser("report", help="Write nex-report.md from session memory")
     config_parser = subs.add_parser("config"); config_subs = config_parser.add_subparsers(dest="config_command", required=True)
     config_subs.add_parser("show")
-    scope_parser = config_subs.add_parser("add-scope"); scope_parser.add_argument("scope"); scope_parser.add_argument("--authorized", action="store_true")
+    scope_parser = config_subs.add_parser("add-scope"); scope_parser.add_argument("scope"); scope_parser.add_argument("--authorized", action="store_true"); scope_parser.add_argument("--i-own-this", action="store_true")
     quick = subs.add_parser("quick", help="Run SAFE recon and enumeration starter chain"); quick.add_argument("target")
     run = subs.add_parser("run", help="Run a registered tool with normal flags")
     run.add_argument("tool", choices=sorted(TOOLS)); run.add_argument("--args"); run.add_argument("--target"); run.add_argument("--domain"); run.add_argument("--ports"); run.add_argument("--port", type=int)
@@ -142,6 +165,7 @@ def main() -> None:
     ns = parser.parse_args()
     try:
         if ns.command == "init":
+            if ns.scope: _confirm_public_scope(ns.scope, ns.authorized, ns.i_own_this)
             path, detected = initialize([ns.scope] if ns.scope else None, ns.authorized)
             print("NEX SETUP\n" + "-" * 30)
             print(f"[ok] Ollama {'detected' if shutil.which('ollama') else 'not found'}")
@@ -155,7 +179,9 @@ def main() -> None:
         if ns.command == "status": _status(ns.json); return
         if ns.command == "config":
             if ns.config_command == "show": print(json.dumps(load_config(), indent=2))
-            else: add_scope(ns.scope, ns.authorized); print(f"Added authorized scope: {ns.scope}")
+            else:
+                _confirm_public_scope(ns.scope, ns.authorized, ns.i_own_this)
+                add_scope(ns.scope, ns.authorized); print(f"Added authorized scope: {ns.scope}")
             return
         if ns.command == "report":
             path = Path.cwd() / "nex-report.md"; path.write_text(markdown_report(load_config()), encoding="utf-8"); print(f"Wrote {path}"); return

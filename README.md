@@ -2,7 +2,7 @@
 
 NEX is a local, offline-friendly controller for **authorized CTF and lab** work on Kali. Models may propose a registered tool call, but the controller—not the model—validates arguments, target scope, phase rules, and confirmation requirements before execution.
 
-## Current v0.1
+## Current v0.2
 
 - `nex init` is idempotent and automatically trusts RFC1918 lab ranges plus any detected Linux tunnel subnet (`tun*`, `wg*`, `tap*`, `ppp*`).
 - Bare `nex` opens a small arrow-key menu; manual menu/flag use makes no model call.
@@ -30,7 +30,7 @@ nex quick 10.10.10.5
 For an authorized public target that is not detected from your VPN, acknowledge it as a scope explicitly:
 
 ```bash
-nex init TARGET --authorized
+nex init TARGET --i-own-this --authorized
 ```
 
 Use `nex help` (or `nex --help`) for command help, `nex config show` to inspect scope, and `nex report` after a session.
