@@ -33,3 +33,12 @@ def initialize(scope: list[str]) -> Path:
     }
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def add_scope(scope_item: str) -> dict[str, Any]:
+    """Add one deliberately supplied authorized lab scope without replacing existing scope."""
+    data = load_config()
+    if scope_item not in data["scope"]:
+        data["scope"].append(scope_item)
+        config_path().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return data

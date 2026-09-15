@@ -27,6 +27,15 @@ nex run nmap_scan --args '{"target":"10.10.10.5","scan_type":"quick"}'
 
 `nex init` accepts one or more comma-separated IPs, CIDRs, or domains. Keep the scope narrowly limited to the lab allocation.
 
+To review or add a later, separately authorized lab target without replacing the original scope:
+
+```bash
+nex config show
+nex config add-scope 10.10.10.5 --authorized
+```
+
+`nex help` and `nex --help` both show command help.
+
 ## Architecture boundary
 
 The planned Ollama layer is an untrusted proposer. It can emit `{"tool": ..., "args": ...}`, but must route through `Gate.authorize()`; it does not get a shell, command strings, or a way to override policy.
