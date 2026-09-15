@@ -16,7 +16,7 @@ from .lens import summarize
 from .models import Phase
 from .registry import TOOLS
 from .session import load as load_session
-from .session import markdown_report, read_artifact, record, record_note, search_artifacts
+from .session import action_artifact, markdown_report, read_artifact, record, record_note, search_artifacts, set_objective
 
 REASONER_MODEL = "qwen3:0.6b"
 TOOL_CALLER_MODEL = "hf.co/tinybiggames/functiongemma-270m-it-q8_0:Q8_0"
@@ -128,6 +128,7 @@ def _status(as_json: bool) -> None:
     print(f"Tool-caller:     {'enabled' if config['models'].get('tool_caller') else 'not enabled'}")
     print(f"Scope:           {', '.join(config['scope'])}\nPhase:           {config['phase']}")
     print(f"Tools available: {len(TOOLS)} SAFE wrappers\nSession log:     {len(session['actions'])} actions run, {len(session['flags'])} possible flags")
+    if session.get("objective"): print(f"Objective:       {session['objective']}")
 
 
 def _interactive() -> None:
@@ -168,6 +169,11 @@ def main() -> None:
     init.add_argument("scope", nargs="?"); init.add_argument("--authorized", action="store_true"); init.add_argument("--i-own-this", action="store_true"); init.add_argument("--dual", action="store_true")
     status = subs.add_parser("status"); status.add_argument("--json", action="store_true")
     subs.add_parser("tools"); subs.add_parser("report", help="Write nex-report.md from session memory")
+    subs.add_parser("findings", help="Show persistent structured findings")
+    subs.add_parser("artifacts", help="List captured raw session artifacts")
+    raw = subs.add_parser("raw", help="Display raw output for an action number"); raw.add_argument("action", type=int)
+    objective = subs.add_parser("objective", help="Set the current session objective"); objective.add_argument("text")
+    subs.add_parser("resume", help="Show the persisted session summary")
     config_parser = subs.add_parser("config"); config_subs = config_parser.add_subparsers(dest="config_command", required=True)
     config_subs.add_parser("show")
     scope_parser = config_subs.add_parser("add-scope"); scope_parser.add_argument("scope"); scope_parser.add_argument("--authorized", action="store_true"); scope_parser.add_argument("--i-own-this", action="store_true")
@@ -192,6 +198,17 @@ def main() -> None:
             for tool in TOOLS.values(): print(f"{tool.name:18} {tool.phase.value:14} {tool.risk.value}")
             return
         if ns.command == "status": _status(ns.json); return
+        if ns.command == "resume": _status(False); return
+        if ns.command == "objective": set_objective(ns.text); print("Session objective saved."); return
+        if ns.command == "findings":
+            findings = load_session()["findings"]
+            print(json.dumps(findings, indent=2) if findings else "No findings recorded."); return
+        if ns.command == "artifacts":
+            actions = load_session()["actions"]
+            if not actions: print("No captured artifacts.")
+            for index, action in enumerate(actions, start=1): print(f"{index}: {action.get('raw_output', 'none')} ({action['tool']})")
+            return
+        if ns.command == "raw": print(action_artifact(ns.action).read_text(encoding="utf-8", errors="replace")); return
         if ns.command == "config":
             if ns.config_command == "show": print(json.dumps(load_config(), indent=2))
             else:

@@ -13,9 +13,10 @@ TOOLS: dict[str, Tool] = {
     "ftp_anon_check": Tool("ftp_anon_check", Phase.ENUMERATION, Risk.SAFE, "nmap", ("target",)),
     "service_probe": Tool("service_probe", Phase.ENUMERATION, Risk.SAFE, "nmap", ("target", "port")),
     "searchsploit_query": Tool("searchsploit_query", Phase.EXPLOITATION, Risk.SAFE, "searchsploit", ("service_name",), ("version",)),
-    "file_search": Tool("file_search", Phase.POST_EXPLOIT, Risk.SAFE, "internal", ("pattern",), ("path",)),
-    "read_file": Tool("read_file", Phase.POST_EXPLOIT, Risk.SAFE, "internal", ("path",)),
-    "flag_grep": Tool("flag_grep", Phase.POST_EXPLOIT, Risk.SAFE, "internal", ("path",)),
+    # These only inspect NEX's own captured artifacts, so they are safe utility actions.
+    "file_search": Tool("file_search", Phase.UTILITY, Risk.SAFE, "internal", ("pattern",), ("path",)),
+    "read_file": Tool("read_file", Phase.UTILITY, Risk.SAFE, "internal", ("path",)),
+    "flag_grep": Tool("flag_grep", Phase.UTILITY, Risk.SAFE, "internal", ("path",)),
     "note_capture": Tool("note_capture", Phase.UTILITY, Risk.SAFE, "internal", ("content",)),
     "report_status": Tool("report_status", Phase.UTILITY, Risk.SAFE, "internal", ()),
 }

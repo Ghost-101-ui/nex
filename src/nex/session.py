@@ -34,7 +34,7 @@ def artifact_path(value: str) -> Path:
 def load() -> dict[str, Any]:
     if _path().exists():
         return json.loads(_path().read_text(encoding="utf-8"))
-    return {"actions": [], "findings": [], "flags": [], "last_target": None}
+    return {"actions": [], "findings": [], "flags": [], "last_target": None, "objective": None}
 
 
 def save(data: dict[str, Any]) -> None:
@@ -66,6 +66,22 @@ def record_note(content: str) -> None:
     save(data)
 
 
+def set_objective(objective: str) -> None:
+    data = load()
+    data["objective"] = objective
+    save(data)
+
+
+def action_artifact(index: int) -> Path:
+    data = load()
+    if not 1 <= index <= len(data["actions"]):
+        raise ValueError("Artifact action number is out of range.")
+    raw_path = data["actions"][index - 1].get("raw_output")
+    if not raw_path:
+        raise ValueError("This action has no captured raw output.")
+    return artifact_path(raw_path)
+
+
 def search_artifacts(pattern: str, path: str | None = None) -> list[str]:
     root = artifact_path(path) if path else artifact_root()
     files = [root] if root.is_file() else list(root.rglob("*.txt"))
@@ -78,7 +94,7 @@ def read_artifact(path: str) -> str:
 
 def markdown_report(config: dict[str, Any]) -> str:
     data = load()
-    lines = ["# NEX Session Report", "", f"- Phase: `{config['phase']}`", f"- Scope: {', '.join(config['scope'])}", "", "## Actions"]
+    lines = ["# NEX Session Report", "", f"- Objective: {data.get('objective') or 'Not set'}", f"- Phase: `{config['phase']}`", f"- Scope: {', '.join(config['scope'])}", "", "## Actions"]
     lines.extend([f"- {a['at']} — `{a['tool']}` (exit {a['exit_code']})" for a in data["actions"]] or ["- No actions recorded."])
     lines += ["", "## Findings"]
     lines.extend([f"- `{f['tool']}`: {f['summary']}" for f in data["findings"]] or ["- No findings recorded."])
