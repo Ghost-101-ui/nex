@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 .pytest_cache/
 nex.config.json
+.nex/

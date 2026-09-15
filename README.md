@@ -2,13 +2,14 @@
 
 NEX is a local, offline-friendly controller for **authorized CTF and lab** work on Kali. Models may propose a registered tool call, but the controller—not the model—validates arguments, target scope, phase rules, and confirmation requirements before execution.
 
-## Current v0.2
+## Current v0.3
 
 - `nex init` is idempotent and automatically trusts RFC1918 lab ranges plus any detected Linux tunnel subnet (`tun*`, `wg*`, `tap*`, `ppp*`).
 - Bare `nex` opens a small arrow-key menu; manual menu/flag use makes no model call.
 - `nex run` accepts normal flags, e.g. `--target` and `--quick`; JSON remains an advanced escape hatch.
 - `nex quick TARGET` runs the SAFE starter chain and records a session log.
 - `nex report` writes a Markdown report from the session log, including possible flag matches.
+- `nex run note_capture --content "..."` records CTF notes; raw outputs are stored under `.nex/raw/` for later session-only inspection.
 - Public scope additions require one explicit acknowledgement: `nex init TARGET --authorized`.
 - High-impact actions and the Ollama autonomous loop are intentionally not included in this first executable slice.
 

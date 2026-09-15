@@ -16,7 +16,7 @@ from .lens import summarize
 from .models import Phase
 from .registry import TOOLS
 from .session import load as load_session
-from .session import markdown_report, record
+from .session import markdown_report, read_artifact, record, record_note, search_artifacts
 
 REASONER_MODEL = "qwen3:0.6b"
 TOOL_CALLER_MODEL = "hf.co/tinybiggames/functiongemma-270m-it-q8_0:Q8_0"
@@ -80,16 +80,31 @@ def _flat_args(ns: argparse.Namespace) -> dict[str, Any]:
     if ns.tool == "service_probe": return {"target": ns.target, "port": ns.port}
     if ns.tool in {"smb_enum", "ftp_anon_check"}: return {"target": ns.target}
     if ns.tool == "searchsploit_query": return {k: v for k, v in {"service_name": ns.service_name, "version": ns.version}.items() if v}
+    if ns.tool == "note_capture": return {"content": ns.content}
+    if ns.tool == "report_status": return {}
+    if ns.tool == "file_search": return {k: v for k, v in {"pattern": ns.pattern, "path": ns.path}.items() if v}
+    if ns.tool in {"read_file", "flag_grep"}: return {"path": ns.path}
     raise ValueError("Use --args for this tool.")
 
 
 def _run(name: str, args: dict[str, Any], config: dict[str, Any]) -> None:
     tool = TOOLS[name]
     Gate().authorize(tool, args, config)
-    timeout = int(config.get("timeouts", {}).get(tool.name, config.get("timeouts", {}).get("default", 120)))
-    code, output = execute(tool, args, timeout)
+    if tool.executable == "internal":
+        if name == "note_capture":
+            record_note(args["content"]); output = "Note saved to session memory."
+        elif name == "file_search": output = "\n".join(search_artifacts(args["pattern"], args.get("path"))) or "No matching session artifacts."
+        elif name == "read_file": output = read_artifact(args["path"])
+        elif name == "flag_grep":
+            from .session import FLAG_PATTERN
+            output = "\n".join(FLAG_PATTERN.findall(read_artifact(args["path"]))) or "No flag pattern found."
+        else: output = json.dumps(load_session(), indent=2)
+        code = 0
+    else:
+        timeout = int(config.get("timeouts", {}).get(tool.name, config.get("timeouts", {}).get("default", 120)))
+        code, output = execute(tool, args, timeout)
     summary = summarize(tool.name, output)
-    print(f"✓ {tool.name} (exit {code})")
+    print(f"[ok] {tool.name} (exit {code})")
     print("\n".join(summary))
     flags = record(tool.name, args, code, output, config["phase"], summary)
     history = config.setdefault("phase_history", [])
@@ -161,7 +176,7 @@ def main() -> None:
     run.add_argument("tool", choices=sorted(TOOLS)); run.add_argument("--args"); run.add_argument("--target"); run.add_argument("--domain"); run.add_argument("--ports"); run.add_argument("--port", type=int)
     run.add_argument("--quick", action="store_true"); run.add_argument("--full", action="store_true"); run.add_argument("--udp", action="store_true")
     run.add_argument("--wordlist", choices=["small", "medium", "large"], default="small"); run.add_argument("--mode", choices=["subdomains", "records"], default="subdomains")
-    run.add_argument("--service-name"); run.add_argument("--version")
+    run.add_argument("--service-name"); run.add_argument("--version"); run.add_argument("--content"); run.add_argument("--pattern"); run.add_argument("--path")
     ns = parser.parse_args()
     try:
         if ns.command == "init":
