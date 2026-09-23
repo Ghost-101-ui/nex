@@ -110,6 +110,20 @@ class TestSessionMemory(unittest.TestCase):
         finally:
             mem.close()
 
+    def test_target_persistence_and_clearing(self):
+        """Verify setting, getting, and clearing active lab target."""
+        mem = SessionMemory(db_path=":memory:")
+        try:
+            self.assertIsNone(mem.get_target())
+            mem.set_target("10.10.10.15")
+            self.assertEqual(mem.get_target(), "10.10.10.15")
+            mem.set_target("10.10.10.20")
+            self.assertEqual(mem.get_target(), "10.10.10.20")
+            mem.set_target(None)
+            self.assertIsNone(mem.get_target())
+        finally:
+            mem.close()
+
 
 if __name__ == "__main__":
     unittest.main()

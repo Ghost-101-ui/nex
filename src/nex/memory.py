@@ -152,6 +152,23 @@ class SessionMemory:
                 (objective,),
             )
 
+    def get_target(self) -> str | None:
+        assert self._conn is not None
+        row = self._conn.execute("SELECT value FROM session_metadata WHERE key = 'target'").fetchone()
+        return row["value"] if row and row["value"] else None
+
+    def set_target(self, target: str | None) -> None:
+        assert self._conn is not None
+        with self._conn:
+            if target and target.strip():
+                self._conn.execute(
+                    "INSERT INTO session_metadata (key, value) VALUES ('target', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (target.strip(),),
+                )
+            else:
+                self._conn.execute("DELETE FROM session_metadata WHERE key = 'target'")
+
     # ---------------- Scope ----------------
     def add_scope(self, target: str, is_authorized: bool = True) -> None:
         target = target.strip()

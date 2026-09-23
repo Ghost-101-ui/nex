@@ -97,7 +97,15 @@ class FallbackHeuristicBackend(InferenceBackend):
         url_match = re.search(r"https?://[^\s]+", user_goal)
         domain_match = re.search(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b", user_goal)
 
-        target = ip_match.group(0) if ip_match else (url_match.group(0) if url_match else (domain_match.group(0) if domain_match else "127.0.0.1"))
+        # Fallback to active lab target if passed in prompt context
+        prompt_target_match = re.search(r"Active Lab Target:\s*([^\s\r\n]+)", prompt)
+        fallback_target = "127.0.0.1"
+        if prompt_target_match:
+            candidate = prompt_target_match.group(1).strip()
+            if candidate and candidate.lower() != "none":
+                fallback_target = candidate
+
+        target = ip_match.group(0) if ip_match else (url_match.group(0) if url_match else (domain_match.group(0) if domain_match else fallback_target))
 
         # Check phase in prompt
         phase = "reconnaissance"
@@ -213,10 +221,12 @@ class Planner:
         CRITICAL: Only includes tools for the CURRENT CTF training phase!"""
         tool_schemas = self.catalog.to_tool_prompt_schema(current_phase)
 
+        active_target = self.memory.get_target()
         prompt_parts = [
             "You are the NEX Security Assistant Planner in an authorized cybersecurity training lab.",
             "Your objective is to help the operator accomplish their authorized CTF goals.",
             f"Current Active Phase: {current_phase}",
+            f"Active Lab Target: {active_target or 'None'}",
             f"Authorized Target Scope: {', '.join(scope) if scope else 'RFC1918 Private Ranges'}",
             "",
             "### Available Tools for Current Phase (DO NOT recommend any other tools):",

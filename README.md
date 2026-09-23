@@ -151,8 +151,11 @@ handles all standard use-cases.
 # Start the interactive REPL
 nex
 
-# Inside the REPL:
-[NEX | reconnaissance]> I need to discover what ports are open on 10.10.10.5
+# Inside the REPL, set active target with /target or /t shortcut:
+[NEX | reconnaissance]> /t 10.10.10.5
+[+] Active lab target set to: 10.10.10.5 (added to authorized scope)
+
+[NEX | reconnaissance | 10.10.10.5]> I need to discover what ports are open
 
 → Proposed Tool Call: nmap [AUTO]
   Command:   nmap -sV -sC --top-ports 100 10.10.10.5
@@ -200,6 +203,8 @@ nex init 10.10.10.5   # add scope without launching REPL
 
 | Command | Purpose |
 |---|---|
+| `/target <ip>` or `/t <ip>` | Set active lab target & add to scope (interactive shortcut for `nex --target`) |
+| `/target clear` or `/t clear` | Clear active target |
 | `/phase <name>` | Switch active CTF training phase |
 | `/history` | Show last 15 tool invocations with status |
 | `/f` | Expand last result to full raw output |

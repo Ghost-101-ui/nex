@@ -32,7 +32,8 @@ DIM = "\033[2m"
 RESET = "\033[0m"
 
 
-def print_banner(phase: str, dual: bool, scope_count: int) -> None:
+def print_banner(phase: str, dual: bool, scope_count: int, target: str | None = None) -> None:
+    target_display = f"{GREEN}{BOLD}{target}{RESET}" if target else f"{DIM}None (set with /target <ip> or /t <ip>){RESET}"
     banner = (
         f"{CYAN}{BOLD}\n"
         f"  _   _ _______  _  {RESET}\n"
@@ -44,14 +45,16 @@ def print_banner(phase: str, dual: bool, scope_count: int) -> None:
         f"{DIM}  Authorized Security Training Assistant (Offline Lab Mode){RESET}\n"
         f"  {'-'*58}\n"
         f"  Phase:     {GREEN}{BOLD}{phase}{RESET}\n"
+        f"  Target:    {target_display}\n"
         f"  Inference: {YELLOW}{'Dual Mode (Qwen3 + FunctionGemma)' if dual else 'Single Mode (Qwen3 0.6B)'}{RESET}\n"
         f"  Lab Scope: {scope_count} authorized target/range(s)\n"
         f"  {'-'*58}\n"
         f"  Type your goal in natural language, or use slash commands:\n"
-        f"    {CYAN}/phase <name>{RESET}  Switch phase    {CYAN}/f{RESET}       Show full raw output\n"
-        f"    {CYAN}/history{RESET}       Show action log {CYAN}/dual{RESET}    Toggle dual mode\n"
-        f"    {CYAN}/scope{RESET}         View/add scope  {CYAN}/findings{RESET} Show findings\n"
-        f"    {CYAN}/tools{RESET}         List tools      {CYAN}/exit{RESET}     Exit session\n"
+        f"    {CYAN}/target <ip>{RESET}  Set active target  {CYAN}/t <ip>{RESET}     Target shortcut\n"
+        f"    {CYAN}/phase <name>{RESET} Switch phase       {CYAN}/f{RESET}          Show full raw output\n"
+        f"    {CYAN}/history{RESET}      Show action log     {CYAN}/dual{RESET}       Toggle dual mode\n"
+        f"    {CYAN}/scope{RESET}        View/add scope      {CYAN}/findings{RESET}   Show findings\n"
+        f"    {CYAN}/tools{RESET}        List tools          {CYAN}/exit{RESET}        Exit session\n"
     )
     print(banner)
 
@@ -74,11 +77,15 @@ class NexREPL:
 
     def run(self) -> None:
         scope = self.memory.get_scope()
-        print_banner(self.memory.get_phase(), self.dual_mode, len(scope))
+        print_banner(self.memory.get_phase(), self.dual_mode, len(scope), self.memory.get_target())
 
         while True:
             current_phase = self.memory.get_phase()
-            prompt_str = f"{CYAN}[NEX | {BOLD}{current_phase}{RESET}{CYAN}]>{RESET} "
+            active_target = self.memory.get_target()
+            if active_target:
+                prompt_str = f"{CYAN}[NEX | {BOLD}{current_phase}{RESET}{CYAN} | {GREEN}{BOLD}{active_target}{RESET}{CYAN}]>{RESET} "
+            else:
+                prompt_str = f"{CYAN}[NEX | {BOLD}{current_phase}{RESET}{CYAN}]>{RESET} "
             try:
                 user_input = input(prompt_str).strip()
             except (KeyboardInterrupt, EOFError):
@@ -104,6 +111,24 @@ class NexREPL:
         if cmd in ("/exit", "/quit", "/q"):
             print(f"{YELLOW}Exiting NEX. Goodbye!{RESET}")
             sys.exit(0)
+
+        elif cmd in ("/target", "/t"):
+            if not arg:
+                current_target = self.memory.get_target()
+                if current_target:
+                    print(f"Active lab target: {GREEN}{BOLD}{current_target}{RESET}")
+                    print(f"Authorized scope: {', '.join(self.memory.get_scope()) or 'None'}")
+                    print(f"Tip: Use {CYAN}/target <ip>{RESET} or {CYAN}/t <ip>{RESET} to change (or {CYAN}/target clear{RESET} to unset)")
+                else:
+                    print(f"{YELLOW}No active lab target set.{RESET}")
+                    print(f"Usage: {CYAN}/target <ip_or_domain>{RESET} or {CYAN}/t <ip_or_domain>{RESET} (shortcut for nex --target)")
+            elif arg.lower() in ("clear", "unset", "none"):
+                self.memory.set_target(None)
+                print(f"[+] Cleared active lab target.")
+            else:
+                self.memory.add_scope(arg)
+                self.memory.set_target(arg)
+                print(f"[+] Active lab target set to: {GREEN}{BOLD}{arg}{RESET} (added to authorized scope)")
 
         elif cmd == "/phase":
             if not arg:
@@ -181,6 +206,8 @@ class NexREPL:
         elif cmd in ("/help", "/?"):
             print(f"""
 {BOLD}NEX Slash Commands:{RESET}
+  /target <ip>     Set active lab target IP/domain and add to scope (shortcut: /t)
+  /t <ip>          Quick shortcut for /target (equivalent to nex --target)
   /phase <name>    View or change active CTF training phase
   /history         View recent tool invocations and operator decisions
   /f               Display full raw cached output of last run
@@ -347,6 +374,7 @@ def main() -> None:
 
     if args.target:
         memory.add_scope(args.target)
+        memory.set_target(args.target)
 
     # Set initial phase if specified
     if args.phase:
