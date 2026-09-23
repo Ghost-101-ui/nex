@@ -74,6 +74,37 @@ class TestPlanner(unittest.TestCase):
         with self.assertRaises(PlannerError):
             self.planner._extract_json(invalid_json)
 
+    def test_extract_json_with_multiple_examples_and_preamble(self):
+        """Planner successfully extracts first complete JSON object even when model repeats examples."""
+        noisy_model_output = """ Do not include the user's name or active phase.
+
+### Example:
+{
+  "tool": "nmap",
+  "args": {"target": "8.8.8.8", "flags": "-sV -sC --top-ports 100"},
+  "phase": "reconnaissance",
+  "reasoning": "nmap is the most suitable tool for this phase as it can discover open ports and run services on target hosts."
+}
+
+### Example:
+{
+  "tool": "gobuster",
+  "args": {"url": "http://8.8.8.8", "wordlist": "/usr/share/wordlists/dirb/common.txt"},
+  "phase": "reconnaissance",
+  "reasoning": "gobuster is a powerful tool."
+}
+
+### Example:
+{
+  "tool": "nmap",
+  "args": {"target": "8.8.8.8", "flags": "-sV -
+"""
+        parsed = self.planner._extract_json(noisy_model_output)
+        self.assertEqual(parsed["tool"], "nmap")
+        self.assertEqual(parsed["args"]["target"], "8.8.8.8")
+        self.assertEqual(parsed["phase"], "reconnaissance")
+
+
 
 if __name__ == "__main__":
     unittest.main()

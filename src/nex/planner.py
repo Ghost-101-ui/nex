@@ -61,11 +61,52 @@ class LlamaCppBackend(InferenceBackend):
     def generate(self, prompt: str, max_tokens: int = 512, temperature: float = 0.1) -> str:
         self._load_model()
         assert self._llm is not None
+
+        # 1. Try create_chat_completion first (handles ChatML, jinja templates, and stop tokens automatically)
+        if hasattr(self._llm, "create_chat_completion"):
+            try:
+                system_msg = (
+                    "You are the NEX Security Assistant Planner in an authorized cybersecurity training lab. "
+                    "You must output ONLY a single valid JSON object matching the requested schema. "
+                    "Do NOT output markdown commentary, explanations outside JSON, or multiple examples."
+                )
+                response = self._llm.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stop=["<|im_end|>", "<|endoftext|>", "</s>", "### Example", "\n###", "\n\n###"],
+                )
+                choice = response["choices"][0]
+                text = choice.get("message", {}).get("content", "")
+                if text and text.strip():
+                    return text
+            except Exception as exc:
+                logger.warning(f"create_chat_completion failed, falling back to direct completion: {exc}")
+
+        # 2. Direct completion with explicit ChatML wrapping and strict stop sequences
+        formatted_prompt = (
+            f"<|im_start|>system\n"
+            f"You are the NEX Security Assistant Planner. Respond with EXACTLY ONE JSON object matching the schema.<|im_end|>\n"
+            f"<|im_start|>user\n"
+            f"{prompt}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
         output = self._llm(
-            prompt,
+            formatted_prompt,
             max_tokens=max_tokens,
             temperature=temperature,
-            stop=["</s>", "<|im_end|>", "\n\nHuman:"],
+            stop=[
+                "<|im_end|>",
+                "<|endoftext|>",
+                "</s>",
+                "\n\nHuman:",
+                "### Example",
+                "\n###",
+                "\n\n###",
+            ],
         )
         return output["choices"][0]["text"]
 
@@ -266,7 +307,7 @@ class Planner:
             "   }",
             "2. Never construct raw shell commands; only provide tool name and named args.",
             "3. If the user previously declined or stopped a tool, propose an alternative.",
-            "4. Return ONLY the JSON object, with no introductory or trailing text.",
+            "4. Return ONLY one single JSON object. Do not output multiple examples, commentary, or text outside JSON.",
         ])
 
         return "\n".join(prompt_parts)
@@ -292,28 +333,59 @@ class Planner:
         )
 
     def _extract_json(self, raw_output: str) -> dict[str, Any]:
-        """Safely extracts JSON object from model response."""
-        # Check for markdown codeblocks ```json ... ```
-        block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_output, re.DOTALL)
-        if block_match:
+        """Safely extracts JSON object from model response, handling markdown blocks,
+        trailing text, multiple examples, or malformed prefixes."""
+        # 1. Check for markdown codeblocks ```json ... ```
+        block_matches = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", raw_output, re.DOTALL)
+        for bm in block_matches:
             try:
-                return json.loads(block_match.group(1))
+                data = json.loads(bm)
+                if isinstance(data, dict):
+                    return data
             except json.JSONDecodeError:
                 pass
 
-        # Try to find outermost { ... }
-        brace_match = re.search(r"\{.*\}", raw_output, re.DOTALL)
-        if brace_match:
-            try:
-                return json.loads(brace_match.group(0))
-            except json.JSONDecodeError:
-                pass
+        # 2. Balanced brace search to find the FIRST complete valid JSON object { ... }
+        start = raw_output.find("{")
+        while start != -1:
+            depth = 0
+            in_string = False
+            escape = False
+            for i in range(start, len(raw_output)):
+                c = raw_output[i]
+                if escape:
+                    escape = False
+                    continue
+                if c == "\\":
+                    escape = True
+                    continue
+                if c == '"':
+                    in_string = not in_string
+                    continue
+                if not in_string:
+                    if c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            candidate = raw_output[start : i + 1]
+                            try:
+                                data = json.loads(candidate)
+                                if isinstance(data, dict):
+                                    return data
+                            except json.JSONDecodeError:
+                                break
+            start = raw_output.find("{", start + 1)
 
-        # Raw parse attempt
+        # 3. Direct raw parse fallback
         try:
-            return json.loads(raw_output.strip())
+            data = json.loads(raw_output.strip())
+            if isinstance(data, dict):
+                return data
         except json.JSONDecodeError as exc:
             raise PlannerError(f"Model failed to emit valid JSON: {raw_output}") from exc
+
+        raise PlannerError(f"Model failed to emit valid JSON object: {raw_output}")
 
     def plan(self, user_input: str, dual: bool | None = None) -> dict[str, Any]:
         """Generates a structured request from user natural language input."""
