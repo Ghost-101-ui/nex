@@ -31,9 +31,48 @@ BOLD = "\033[1m"
 DIM = "\033[2m"
 RESET = "\033[0m"
 
+PHASE_ALIASES: dict[str, str] = {
+    "1": "reconnaissance",
+    "recon": "reconnaissance",
+    "reconnaissance": "reconnaissance",
+    "2": "service_enumeration",
+    "enum": "service_enumeration",
+    "enumeration": "service_enumeration",
+    "service_enumeration": "service_enumeration",
+    "3": "vulnerability_assessment",
+    "vuln": "vulnerability_assessment",
+    "vulnerability": "vulnerability_assessment",
+    "vulnerability_assessment": "vulnerability_assessment",
+    "4": "post_engagement_review",
+    "post": "post_engagement_review",
+    "review": "post_engagement_review",
+    "post_engagement_review": "post_engagement_review",
+    "5": "utility",
+    "util": "utility",
+    "utility": "utility",
+}
 
-def print_banner(phase: str, dual: bool, scope_count: int, target: str | None = None) -> None:
+
+def resolve_phase(query: str, phases: list[str]) -> str | None:
+    """Resolve a phase query (number 1-5, short name, or exact name) to canonical phase."""
+    q = query.strip().lower()
+    if q in PHASE_ALIASES and PHASE_ALIASES[q] in phases:
+        return PHASE_ALIASES[q]
+    if q.isdigit():
+        idx = int(q) - 1
+        if 0 <= idx < len(phases):
+            return phases[idx]
+    for p in phases:
+        if p.lower() == q:
+            return p
+    return None
+
+
+def print_banner(phase: str, dual: bool, scope_count: int, target: str | None = None, phases: list[str] | None = None) -> None:
     target_display = f"{GREEN}{BOLD}{target}{RESET}" if target else f"{DIM}None (set with /target <ip> or /t <ip>){RESET}"
+    phase_num_prefix = ""
+    if phases and phase in phases:
+        phase_num_prefix = f"[{phases.index(phase) + 1}] "
     banner = (
         f"{CYAN}{BOLD}\n"
         f"  _   _ _______  _  {RESET}\n"
@@ -44,17 +83,17 @@ def print_banner(phase: str, dual: bool, scope_count: int, target: str | None = 
         f"{DIM}  CyberEDT NEX v{__version__} | Navigate / Execute / eXplore{RESET}\n"
         f"{DIM}  Authorized Security Training Assistant (Offline Lab Mode){RESET}\n"
         f"  {'-'*58}\n"
-        f"  Phase:     {GREEN}{BOLD}{phase}{RESET}\n"
+        f"  Phase:     {GREEN}{BOLD}{phase_num_prefix}{phase}{RESET}\n"
         f"  Target:    {target_display}\n"
         f"  Inference: {YELLOW}{'Dual Mode (Qwen3 + FunctionGemma)' if dual else 'Single Mode (Qwen3 0.6B)'}{RESET}\n"
         f"  Lab Scope: {scope_count} authorized target/range(s)\n"
         f"  {'-'*58}\n"
         f"  Type your goal in natural language, or use slash commands:\n"
-        f"    {CYAN}/target <ip>{RESET}  Set active target  {CYAN}/t <ip>{RESET}     Target shortcut\n"
-        f"    {CYAN}/phase <name>{RESET} Switch phase       {CYAN}/f{RESET}          Show full raw output\n"
-        f"    {CYAN}/history{RESET}      Show action log     {CYAN}/dual{RESET}       Toggle dual mode\n"
-        f"    {CYAN}/scope{RESET}        View/add scope      {CYAN}/findings{RESET}   Show findings\n"
-        f"    {CYAN}/tools{RESET}        List tools          {CYAN}/exit{RESET}        Exit session\n"
+        f"    {CYAN}/phase <1-5>{RESET} Switch phase (or /p) {CYAN}/target <ip>{RESET}  Set target (or /t)\n"
+        f"    {CYAN}/history{RESET}     Show action log       {CYAN}/f{RESET}          Show full raw output\n"
+        f"    {CYAN}/scope{RESET}       View/add scope        {CYAN}/dual{RESET}       Toggle dual mode\n"
+        f"    {CYAN}/tools{RESET}       List tools            {CYAN}/findings{RESET}   Show findings\n"
+        f"    {CYAN}/exit{RESET}        Exit session\n"
     )
     print(banner)
 
@@ -77,7 +116,7 @@ class NexREPL:
 
     def run(self) -> None:
         scope = self.memory.get_scope()
-        print_banner(self.memory.get_phase(), self.dual_mode, len(scope), self.memory.get_target())
+        print_banner(self.memory.get_phase(), self.dual_mode, len(scope), self.memory.get_target(), self.catalog.phases)
 
         while True:
             current_phase = self.memory.get_phase()
@@ -130,16 +169,39 @@ class NexREPL:
                 self.memory.set_target(arg)
                 print(f"[+] Active lab target set to: {GREEN}{BOLD}{arg}{RESET} (added to authorized scope)")
 
-        elif cmd == "/phase":
+        elif cmd in ("/phase", "/p"):
             if not arg:
-                print(f"Current phase: {GREEN}{self.memory.get_phase()}{RESET}")
-                print(f"Available phases: {', '.join(self.catalog.phases)}")
+                current_p = self.memory.get_phase()
+                try:
+                    curr_num = self.catalog.phases.index(current_p) + 1
+                    num_prefix = f"[{curr_num}] "
+                except ValueError:
+                    num_prefix = ""
+                print(f"Current phase: {GREEN}{BOLD}{num_prefix}{current_p}{RESET}")
+                print(f"\n{BOLD}Available training phases:{RESET}")
+                for i, p in enumerate(self.catalog.phases, start=1):
+                    marker = f"{GREEN}* {RESET}" if p == current_p else "  "
+                    print(f"{marker}[{i}] {p}")
+                print(f"\nTip: Use {CYAN}/phase <1-5>{RESET} or {CYAN}/p <1-5>{RESET} to switch fast (e.g. {CYAN}/p 2{RESET} or {CYAN}/p next{RESET})")
+            elif arg.lower() in ("next", "n", "+"):
+                current_p = self.memory.get_phase()
+                try:
+                    idx = self.catalog.phases.index(current_p)
+                    next_idx = (idx + 1) % len(self.catalog.phases)
+                except ValueError:
+                    next_idx = 0
+                next_phase = self.catalog.phases[next_idx]
+                self.memory.set_phase(next_phase)
+                print(f"[+] Active phase switched to: [{next_idx + 1}] {GREEN}{BOLD}{next_phase}{RESET}")
             else:
-                if arg in self.catalog.phases:
-                    self.memory.set_phase(arg)
-                    print(f"[+] Active phase switched to: {GREEN}{BOLD}{arg}{RESET}")
+                resolved = resolve_phase(arg, self.catalog.phases)
+                if resolved:
+                    self.memory.set_phase(resolved)
+                    idx = self.catalog.phases.index(resolved) + 1
+                    print(f"[+] Active phase switched to: [{idx}] {GREEN}{BOLD}{resolved}{RESET}")
                 else:
-                    print(f"{RED}Unknown phase '{arg}'. Allowed: {', '.join(self.catalog.phases)}{RESET}")
+                    options = ", ".join(f"[{i+1}] {p}" for i, p in enumerate(self.catalog.phases))
+                    print(f"{RED}Unknown phase '{arg}'. Allowed numbers 1-{len(self.catalog.phases)} or names: {options}{RESET}")
 
         elif cmd == "/dual":
             self.dual_mode = not self.dual_mode
@@ -206,9 +268,10 @@ class NexREPL:
         elif cmd in ("/help", "/?"):
             print(f"""
 {BOLD}NEX Slash Commands:{RESET}
+  /phase <1-5|name> Switch phase by number or name (shortcut: /p)
+  /p <1-5|name>     Fast phase switch (e.g. /p 2: enum, /p 3: vuln, /p next)
   /target <ip>     Set active lab target IP/domain and add to scope (shortcut: /t)
   /t <ip>          Quick shortcut for /target (equivalent to nex --target)
-  /phase <name>    View or change active CTF training phase
   /history         View recent tool invocations and operator decisions
   /f               Display full raw cached output of last run
   /dual            Toggle dual-model reasoning mode (Qwen3 + FunctionGemma)
@@ -296,8 +359,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--phase",
-        choices=["reconnaissance", "service_enumeration", "vulnerability_assessment", "post_engagement_review", "utility"],
-        help="Initial training phase",
+        help="Initial training phase name or number (1-5)",
     )
     parser.add_argument(
         "--target",
@@ -378,7 +440,11 @@ def main() -> None:
 
     # Set initial phase if specified
     if args.phase:
-        memory.set_phase(args.phase)
+        resolved_phase = resolve_phase(args.phase, catalog.phases)
+        if resolved_phase:
+            memory.set_phase(resolved_phase)
+        else:
+            print(f"{RED}[WARN] Unknown phase '{args.phase}'. Using default phase.{RESET}")
 
     # Subcommand dispatch
     if args.subcommand == "tools":

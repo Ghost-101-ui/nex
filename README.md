@@ -171,17 +171,22 @@ Summary:
 
 [Tip: Type /f to view the complete raw output]
 
-[NEX | reconnaissance]> /phase service_enumeration
-[+] Active phase switched to: service_enumeration
+# Shift quickly to the next phase using numbers (or /p next):
+[NEX | reconnaissance | 10.10.10.5]> /phase 2
+[+] Active phase switched to: [2] service_enumeration
 
-[NEX | service_enumeration]> Check what directories exist on the web server
+[NEX | service_enumeration | 10.10.10.5]> Check what directories exist on the web server
 → Proposed Tool Call: gobuster [AUTO]
   Command:   gobuster dir -u http://10.10.10.5 -w /usr/share/wordlists/dirb/common.txt -q
   ...
 
-[NEX | service_enumeration]> /history
-[NEX | service_enumeration]> /findings
-[NEX | service_enumeration]> /exit
+# Shift to vulnerability assessment:
+[NEX | service_enumeration | 10.10.10.5]> /p 3
+[+] Active phase switched to: [3] vulnerability_assessment
+
+[NEX | vulnerability_assessment | 10.10.10.5]> /history
+[NEX | vulnerability_assessment | 10.10.10.5]> /findings
+[NEX | vulnerability_assessment | 10.10.10.5]> /exit
 ```
 
 ### CLI subcommands (non-interactive)
@@ -191,7 +196,7 @@ nex tools              # list all catalog tools
 nex status             # human-readable session status
 nex status --json      # machine-readable JSON
 nex --target 10.10.10.5   # pre-add a scope target and start REPL
-nex --phase service_enumeration   # start in a specific phase
+nex --phase 2          # start directly in service_enumeration (by number or name)
 nex --ephemeral        # in-memory session, nothing persisted
 nex --dual             # enable dual-model mode
 nex init 10.10.10.5   # add scope without launching REPL
@@ -199,13 +204,29 @@ nex init 10.10.10.5   # add scope without launching REPL
 
 ---
 
+## Training Phases & Quick Numbers
+
+NEX organizes tools by authorized engagement phase. You can switch phases instantly in the REPL using numbers (`/phase <no.>` or `/p <no.>`):
+
+| # | Phase Name | Quick Aliases | Primary Tools |
+|---|---|---|---|
+| **1** | `reconnaissance` | `/p 1`, `/p recon` | `nmap`, `whois`, `dig` |
+| **2** | `service_enumeration` | `/p 2`, `/p enum` | `gobuster`, `enum4linux`, `smbclient` |
+| **3** | `vulnerability_assessment` | `/p 3`, `/p vuln` | `sqlmap`, `hydra`, `metasploit` |
+| **4** | `post_engagement_review` | `/p 4`, `/p post` | `linpeas`, `pspy` |
+| **5** | `utility` | `/p 5`, `/p util` | `http_server`, `note_capture` |
+
+---
+
 ## REPL slash commands
 
 | Command | Purpose |
 |---|---|
+| `/phase <1-5>` or `/p <1-5>` | Fast phase switch by number (e.g. `/phase 2` or `/p 3`) |
+| `/phase next` or `/p next` | Advance immediately to the next sequential phase |
+| `/phase` or `/p` | View all available numbered phases and current active phase |
 | `/target <ip>` or `/t <ip>` | Set active lab target & add to scope (interactive shortcut for `nex --target`) |
 | `/target clear` or `/t clear` | Clear active target |
-| `/phase <name>` | Switch active CTF training phase |
 | `/history` | Show last 15 tool invocations with status |
 | `/f` | Expand last result to full raw output |
 | `/dual` | Toggle dual-model mode at runtime |
