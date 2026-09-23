@@ -68,6 +68,77 @@ def resolve_phase(query: str, phases: list[str]) -> str | None:
     return None
 
 
+def check_models_status(project_root: Path, config_data: dict[str, Any]) -> dict[str, Any]:
+    """Inspect local filesystem and Python environment to report model availability."""
+    planner_cfg = config_data.get("models", {})
+    qwen_rel = planner_cfg.get("planner_model_path", "models/qwen3-0.6b-instruct.Q4_K_M.gguf")
+    gemma_rel = planner_cfg.get("tool_caller_model_path", "models/functiongemma-270m-it.Q8_0.gguf")
+
+    qwen_path = project_root / qwen_rel
+    gemma_path = project_root / gemma_rel
+
+    try:
+        import llama_cpp
+        llama_cpp_installed = True
+    except ImportError:
+        llama_cpp_installed = False
+
+    qwen_exists = qwen_path.is_file()
+    qwen_size = f"{qwen_path.stat().st_size / (1024 * 1024):.1f} MB" if qwen_exists else None
+
+    gemma_exists = gemma_path.is_file()
+    gemma_size = f"{gemma_path.stat().st_size / (1024 * 1024):.1f} MB" if gemma_exists else None
+
+    if llama_cpp_installed and qwen_exists:
+        mode = "Local GGUF Model Inference (llama-cpp-python)"
+    else:
+        mode = "Deterministic Heuristic Fallback Engine (Active & Offline)"
+
+    return {
+        "llama_cpp_installed": llama_cpp_installed,
+        "qwen_path": qwen_path,
+        "qwen_exists": qwen_exists,
+        "qwen_size": qwen_size,
+        "gemma_path": gemma_path,
+        "gemma_exists": gemma_exists,
+        "gemma_size": gemma_size,
+        "mode": mode,
+    }
+
+
+def print_models_status(status: dict[str, Any]) -> None:
+    """Print human-readable local model and inference engine status."""
+    print(f"\n{BOLD}CyberEDT NEX — Local Model Verification:{RESET}")
+    print("=" * 60)
+
+    if status["llama_cpp_installed"]:
+        print(f"  Inference Runtime:  {GREEN}[✓] llama-cpp-python INSTALLED{RESET}")
+    else:
+        print(f"  Inference Runtime:  {YELLOW}[-] llama-cpp-python NOT INSTALLED{RESET}")
+        print(f"                      {DIM}(Install: pip install llama-cpp-python){RESET}")
+
+    if status["qwen_exists"]:
+        print(f"  Qwen3 0.6B GGUF:    {GREEN}[✓] FOUND{RESET} ({status['qwen_size']})")
+        print(f"                      {DIM}{status['qwen_path']}{RESET}")
+    else:
+        print(f"  Qwen3 0.6B GGUF:    {YELLOW}[-] NOT FOUND{RESET}")
+        print(f"                      Expected at: {status['qwen_path']}")
+
+    if status["gemma_exists"]:
+        print(f"  FunctionGemma GGUF: {GREEN}[✓] FOUND{RESET} ({status['gemma_size']})")
+        print(f"                      {DIM}{status['gemma_path']}{RESET}")
+    else:
+        print(f"  FunctionGemma GGUF: {DIM}[-] NOT FOUND (optional, for --dual mode){RESET}")
+        print(f"                      Expected at: {status['gemma_path']}")
+
+    print("-" * 60)
+    print(f"  Current Mode:       {CYAN}{BOLD}{status['mode']}{RESET}")
+    if not status["qwen_exists"] or not status["llama_cpp_installed"]:
+        print(f"\n  {DIM}Note: NEX runs completely offline using the deterministic fallback engine.{RESET}")
+        print(f"  {DIM}To use local GGUF models, place .gguf files in the models/ directory.{RESET}")
+    print("=" * 60 + "\n")
+
+
 def print_banner(phase: str, dual: bool, scope_count: int, target: str | None = None, phases: list[str] | None = None) -> None:
     target_display = f"{GREEN}{BOLD}{target}{RESET}" if target else f"{DIM}None (set with /target <ip> or /t <ip>){RESET}"
     phase_num_prefix = ""
@@ -93,7 +164,7 @@ def print_banner(phase: str, dual: bool, scope_count: int, target: str | None = 
         f"    {CYAN}/history{RESET}     Show action log       {CYAN}/f{RESET}          Show full raw output\n"
         f"    {CYAN}/scope{RESET}       View/add scope        {CYAN}/dual{RESET}       Toggle dual mode\n"
         f"    {CYAN}/tools{RESET}       List tools            {CYAN}/findings{RESET}   Show findings\n"
-        f"    {CYAN}/exit{RESET}        Exit session\n"
+        f"    {CYAN}/models{RESET}      Check LLM status      {CYAN}/exit{RESET}        Exit session\n"
     )
     print(banner)
 
@@ -265,6 +336,12 @@ class NexREPL:
                 print(f"  * {BOLD}{t.name:<14}{RESET} [{tier_color}{t.approval_tier}{RESET}] ({t.phase}) - {t.description}")
             print()
 
+        elif cmd in ("/models", "/m"):
+            project_root = find_project_root()
+            config_data = load_config()
+            status = check_models_status(project_root, config_data)
+            print_models_status(status)
+
         elif cmd in ("/help", "/?"):
             print(f"""
 {BOLD}NEX Slash Commands:{RESET}
@@ -272,6 +349,7 @@ class NexREPL:
   /p <1-5|name>     Fast phase switch (e.g. /p 2: enum, /p 3: vuln, /p next)
   /target <ip>     Set active lab target IP/domain and add to scope (shortcut: /t)
   /t <ip>          Quick shortcut for /target (equivalent to nex --target)
+  /models          Check local GGUF model files and inference engine status (shortcut: /m)
   /history         View recent tool invocations and operator decisions
   /f               Display full raw cached output of last run
   /dual            Toggle dual-model reasoning mode (Qwen3 + FunctionGemma)
@@ -395,6 +473,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # tools subcommand
     subparsers.add_parser("tools", help="List tools defined in the catalog")
 
+    # models subcommand
+    subparsers.add_parser("models", help="Check local GGUF model files and inference engine status")
+
     # status subcommand
     status_parser = subparsers.add_parser("status", help="Show system status and session details")
     status_parser.add_argument("--json", action="store_true", help="Output as JSON")
@@ -455,6 +536,11 @@ def main() -> None:
                 print(f"[{phase.upper()}]")
                 for t in tools:
                     print(f"  * {t.name:<15} [{t.approval_tier}] - {t.description}")
+        sys.exit(0)
+
+    if args.subcommand == "models":
+        model_status = check_models_status(project_root, config_data)
+        print_models_status(model_status)
         sys.exit(0)
 
     if args.subcommand == "status":
