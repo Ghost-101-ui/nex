@@ -234,6 +234,8 @@ NEX organizes tools by authorized engagement phase. You can switch phases instan
 | **4** | `post_engagement_review` | `/p 4`, `/p post` | `linpeas`, `pspy` |
 | **5** | `utility` | `/p 5`, `/p util` | `http_server`, `note_capture` |
 
+> 📖 **Operator Prompt Playbook**: For a comprehensive per-phase guide with exact prompt examples, expected commands, and workflow strategies, see [**`PROMPTS.md`**](PROMPTS.md).
+
 ---
 
 ## REPL slash commands
