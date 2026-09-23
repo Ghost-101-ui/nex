@@ -2,233 +2,422 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
-import subprocess
+import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    import readline
+except ImportError:
+    readline = None
+
 from . import __version__
-from .config import add_scope, config_path, initialize, is_auto_trusted_scope, load_config
-from .executor import execute
-from .gate import Gate, GateError, in_scope
-from .lens import summarize
-from .models import Phase
-from .registry import TOOLS
-from .session import load as load_session
-from .session import action_artifact, markdown_report, read_artifact, record, record_note, search_artifacts, set_objective
-
-REASONER_MODEL = "qwen3:0.6b"
-TOOL_CALLER_MODEL = "hf.co/tinybiggames/functiongemma-270m-it-q8_0:Q8_0"
+from .catalog import Catalog, CatalogValidationError
+from .config import find_project_root, load_config
+from .controller import Controller, ControllerError, ExecutionResult
+from .memory import SessionMemory
+from .planner import Planner, PlannerError
 
 
-def _ollama_models() -> set[str]:
-    if not shutil.which("ollama"):
-        return set()
-    try:
-        output = subprocess.check_output(["ollama", "list"], text=True, stderr=subprocess.DEVNULL)
-        return {line.split()[0] for line in output.splitlines()[1:] if line.split()}
-    except (OSError, subprocess.CalledProcessError):
-        return set()
+# ANSI styling
+CYAN = "\033[96m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+MAGENTA = "\033[95m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RESET = "\033[0m"
 
 
-def _web(value: str) -> str:
-    return value if "://" in value else f"http://{value}"
+def print_banner(phase: str, dual: bool, scope_count: int) -> None:
+    banner = (
+        f"{CYAN}{BOLD}\n"
+        f"  _   _ _______  _  {RESET}\n"
+        f"{CYAN}{BOLD} | \\ | | ____\\ \\/ /  {RESET}\n"
+        f"{CYAN}{BOLD} |  \\| |  _|  \\  /   {RESET}\n"
+        f"{CYAN}{BOLD} | |\\  | |___ /  \\   {RESET}\n"
+        f"{CYAN}{BOLD} |_| \\_|_____/_/\\_\\  {RESET}\n"
+        f"{DIM}  CyberEDT NEX v{__version__} | Navigate / Execute / eXplore{RESET}\n"
+        f"{DIM}  Authorized Security Training Assistant (Offline Lab Mode){RESET}\n"
+        f"  {'-'*58}\n"
+        f"  Phase:     {GREEN}{BOLD}{phase}{RESET}\n"
+        f"  Inference: {YELLOW}{'Dual Mode (Qwen3 + FunctionGemma)' if dual else 'Single Mode (Qwen3 0.6B)'}{RESET}\n"
+        f"  Lab Scope: {scope_count} authorized target/range(s)\n"
+        f"  {'-'*58}\n"
+        f"  Type your goal in natural language, or use slash commands:\n"
+        f"    {CYAN}/phase <name>{RESET}  Switch phase    {CYAN}/f{RESET}       Show full raw output\n"
+        f"    {CYAN}/history{RESET}       Show action log {CYAN}/dual{RESET}    Toggle dual mode\n"
+        f"    {CYAN}/scope{RESET}         View/add scope  {CYAN}/findings{RESET} Show findings\n"
+        f"    {CYAN}/tools{RESET}         List tools      {CYAN}/exit{RESET}     Exit session\n"
+    )
+    print(banner)
 
 
-def _offer_model(model: str) -> None:
-    """Pull only after an interactive affirmative answer; never on manual scans."""
-    if model in _ollama_models():
-        print(f"[ok] {model} found")
-        return
-    if not shutil.which("ollama"):
-        print(f"[!] {model} unavailable because Ollama is not installed")
-        return
-    if not sys.stdin.isatty():
-        print(f"[!] {model} not installed; run 'ollama pull {model}' when online")
-        return
-    if input(f"[?] {model} is missing. Pull it now? [y/N] ").strip().lower() in {"y", "yes"}:
-        subprocess.run(["ollama", "pull", model], check=False)
+class NexREPL:
+    def __init__(
+        self,
+        catalog: Catalog,
+        memory: SessionMemory,
+        planner: Planner,
+        controller: Controller,
+        dual_mode: bool = False,
+    ):
+        self.catalog = catalog
+        self.memory = memory
+        self.planner = planner
+        self.controller = controller
+        self.dual_mode = dual_mode
+        self.last_result: ExecutionResult | None = None
+
+    def run(self) -> None:
+        scope = self.memory.get_scope()
+        print_banner(self.memory.get_phase(), self.dual_mode, len(scope))
+
+        while True:
+            current_phase = self.memory.get_phase()
+            prompt_str = f"{CYAN}[NEX | {BOLD}{current_phase}{RESET}{CYAN}]>{RESET} "
+            try:
+                user_input = input(prompt_str).strip()
+            except (KeyboardInterrupt, EOFError):
+                print(f"\n{YELLOW}Exiting NEX. Session saved.{RESET}")
+                break
+
+            if not user_input:
+                continue
+
+            # Check slash commands
+            if user_input.startswith("/"):
+                self.handle_slash_command(user_input)
+                continue
+
+            # Process natural language request via Planner & Controller
+            self.handle_natural_language(user_input)
+
+    def handle_slash_command(self, cmd_line: str) -> None:
+        parts = cmd_line.split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd in ("/exit", "/quit", "/q"):
+            print(f"{YELLOW}Exiting NEX. Goodbye!{RESET}")
+            sys.exit(0)
+
+        elif cmd == "/phase":
+            if not arg:
+                print(f"Current phase: {GREEN}{self.memory.get_phase()}{RESET}")
+                print(f"Available phases: {', '.join(self.catalog.phases)}")
+            else:
+                if arg in self.catalog.phases:
+                    self.memory.set_phase(arg)
+                    print(f"[+] Active phase switched to: {GREEN}{BOLD}{arg}{RESET}")
+                else:
+                    print(f"{RED}Unknown phase '{arg}'. Allowed: {', '.join(self.catalog.phases)}{RESET}")
+
+        elif cmd == "/dual":
+            self.dual_mode = not self.dual_mode
+            status = "ENABLED" if self.dual_mode else "DISABLED"
+            print(f"[+] Dual-model reasoning mode: {YELLOW}{status}{RESET}")
+
+        elif cmd in ("/f", "/full"):
+            last_raw = self.memory.get_last_raw_output()
+            if last_raw:
+                print(f"\n{DIM}--- Full Raw Output ---{RESET}")
+                print(last_raw)
+                print(f"{DIM}--- End Raw Output ---{RESET}\n")
+            else:
+                print(f"{YELLOW}No previous command raw output available.{RESET}")
+
+        elif cmd == "/history":
+            history = self.memory.get_recent_history(limit=15)
+            if not history:
+                print("No history recorded yet.")
+                return
+            print(f"\n{BOLD}Session Action History ({len(history)} entries):{RESET}")
+            for h in history:
+                status_color = GREEN if h["status"] == "EXECUTED" else (RED if h["status"] in ("FAILED", "TIMEOUT") else YELLOW)
+                print(
+                    f"  [{status_color}{h['status']:<8}{RESET}] "
+                    f"{h['tool']} ({h['phase']}) | Tier: {h['approval_tier']}"
+                )
+                print(f"    Args: {h['args']}")
+                print(f"    Reasoning: {h['reasoning']}")
+                if h["summary"]:
+                    print(f"    Result: {h['summary'][0]}")
+            print()
+
+        elif cmd == "/findings":
+            findings = self.memory.get_findings()
+            if not findings:
+                print("No findings recorded yet.")
+                return
+            print(f"\n{MAGENTA}{BOLD}Discovered Session Findings ({len(findings)}):{RESET}")
+            for f in findings:
+                print(f"  * [{f['phase']}] {f['tool']} ({f['category']}): {f['finding']}")
+            print()
+
+        elif cmd == "/scope":
+            if not arg:
+                scope = self.memory.get_scope()
+                print(f"\n{BOLD}Authorized Lab Scope:{RESET}")
+                for s in scope:
+                    print(f"  * {s}")
+                print()
+            else:
+                self.memory.add_scope(arg)
+                print(f"[+] Added to authorized lab scope: {GREEN}{arg}{RESET}")
+
+        elif cmd == "/tools":
+            current_phase = self.memory.get_phase()
+            tools = self.catalog.get_tools_for_phase(current_phase)
+            print(f"\n{BOLD}Tools for phase '{current_phase}' (and utility):{RESET}")
+            for t in tools:
+                tier_color = GREEN if t.approval_tier == "AUTO" else YELLOW
+                print(f"  * {BOLD}{t.name:<14}{RESET} [{tier_color}{t.approval_tier}{RESET}] ({t.phase}) - {t.description}")
+            print()
+
+        elif cmd in ("/help", "/?"):
+            print(f"""
+{BOLD}NEX Slash Commands:{RESET}
+  /phase <name>    View or change active CTF training phase
+  /history         View recent tool invocations and operator decisions
+  /f               Display full raw cached output of last run
+  /dual            Toggle dual-model reasoning mode (Qwen3 + FunctionGemma)
+  /scope [target]  View or add authorized IP/subnet/domain scope
+  /findings        View all structured findings extracted by Summarizer
+  /tools           List catalog tools available for current phase
+  /exit            Exit the session
+""")
+        else:
+            print(f"{RED}Unknown command '{cmd}'. Type /help for available commands.{RESET}")
+
+    def handle_natural_language(self, user_input: str) -> None:
+        current_phase = self.memory.get_phase()
+
+        # Step 1: Planner constructs structured request
+        try:
+            print(f"{DIM}Thinking...{RESET}", end="\r")
+            plan_req = self.planner.plan(user_input, dual=self.dual_mode)
+        except PlannerError as exc:
+            print(f"{RED}[!] Planner Error: {exc}{RESET}")
+            return
+
+        tool_name = plan_req["tool"]
+        tool_args = plan_req["args"]
+        reasoning = plan_req.get("reasoning", "")
+        plan_phase = plan_req.get("phase", current_phase)
+
+        # Show proposed request before running (even for AUTO tier)
+        tool_def = self.catalog.get_tool(tool_name)
+        tier_str = tool_def.approval_tier if tool_def else "AUTO"
+        cmd_preview = self.controller.build_command_args(tool_def, tool_args) if tool_def else [tool_name]
+        cmd_preview_str = " ".join(shlex.quote(c) for c in cmd_preview)
+
+        print(f"\n{CYAN}→ Proposed Tool Call:{RESET} {BOLD}{tool_name}{RESET} [{tier_str}]")
+        print(f"  Command:   {cmd_preview_str}")
+        print(f"  Reasoning: {reasoning}")
+
+        # Step 2: Controller Gate execution & validation
+        try:
+            result = self.controller.execute_request(
+                tool_name=tool_name,
+                args=tool_args,
+                reasoning=reasoning,
+            )
+            self.last_result = result
+
+            if result.status == "STOPPED":
+                print(f"{YELLOW}[!] Action STOPPED by operator. Logged to session memory.{RESET}\n")
+                return
+
+            if result.status == "FAILED":
+                print(f"{RED}[!] Execution Failed (exit {result.exit_code}):{RESET}")
+                for s in result.summary:
+                    print(f"    {s}")
+                print(f"{DIM}Note: Failed execution context saved for Planner.{RESET}\n")
+                return
+
+            if result.status == "TIMEOUT":
+                print(f"{RED}[!] Execution Timed Out after {result.duration_sec}s.{RESET}\n")
+                return
+
+            # Successful execution -> Display Summarizer result
+            print(f"\n{GREEN}[✓] Executed successfully in {result.duration_sec}s (exit {result.exit_code}){RESET}")
+            print(f"{BOLD}Summary:{RESET}")
+            for line in result.summary:
+                print(f"  {line}")
+
+            print(f"\n{DIM}[Tip: Type /f to view the complete raw output]{RESET}\n")
+
+        except ControllerError as exc:
+            print(f"{RED}[!] Controller Gate Blocked Action: {exc}{RESET}\n")
+        except Exception as exc:
+            print(f"{RED}[!] Unexpected error: {exc}{RESET}\n")
 
 
-def _confirm_public_scope(target: str, authorized: bool, ownership: bool) -> None:
-    """A public target needs two explicit command flags and exact retyping."""
-    if is_auto_trusted_scope(target):
-        return
-    if not (authorized and ownership):
-        raise ValueError("Public scope requires both --i-own-this and --authorized.")
-    if not sys.stdin.isatty():
-        raise ValueError("Public scope confirmation must be completed in an interactive terminal.")
-    typed = input(f"Type the exact target to confirm authorization ({target}): ").strip()
-    if typed != target:
-        raise ValueError("Target confirmation did not match; scope was not changed.")
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="nex",
+        description="CyberEDT NEX: Offline, gated assistant for authorized cybersecurity training labs",
+    )
+    parser.add_argument(
+        "--dual",
+        action="store_true",
+        help="Enable dual-model mode (Qwen3 reasoner + FunctionGemma structured request generator)",
+    )
+    parser.add_argument(
+        "--phase",
+        choices=["reconnaissance", "service_enumeration", "vulnerability_assessment", "post_engagement_review", "utility"],
+        help="Initial training phase",
+    )
+    parser.add_argument(
+        "--target",
+        help="Target IP/domain to add to authorized scope on startup",
+    )
+    parser.add_argument(
+        "--ephemeral",
+        action="store_true",
+        help="Run in ephemeral mode (in-memory SQLite database, no persistent state saved)",
+    )
+    parser.add_argument(
+        "--catalog",
+        default=None,
+        help="Path to custom catalog.yaml",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to custom config.yaml",
+    )
+    parser.add_argument(
+        "-v", "--version",
+        action="version",
+        version=f"CyberEDT NEX {__version__}",
+    )
 
+    # Subparsers for CLI automation
+    subparsers = parser.add_subparsers(dest="subcommand")
 
-def _flat_args(ns: argparse.Namespace) -> dict[str, Any]:
-    if ns.args:
-        parsed = json.loads(ns.args)
-        if not isinstance(parsed, dict): raise ValueError("--args must be a JSON object.")
-        return parsed
-    if ns.tool == "nmap_scan":
-        scan = "full" if ns.full else "udp" if ns.udp else "quick"
-        return {k: v for k, v in {"target": ns.target, "scan_type": scan, "ports": ns.ports}.items() if v is not None}
-    if ns.tool in {"whatweb_scan", "nikto_scan", "gobuster_dir"}:
-        args = {"target": _web(ns.target)}
-        if ns.tool == "gobuster_dir": args["wordlist"] = ns.wordlist
-        return args
-    if ns.tool == "dns_enum": return {"domain": ns.domain or ns.target, "mode": ns.mode}
-    if ns.tool == "service_probe": return {"target": ns.target, "port": ns.port}
-    if ns.tool in {"smb_enum", "ftp_anon_check"}: return {"target": ns.target}
-    if ns.tool == "searchsploit_query": return {k: v for k, v in {"service_name": ns.service_name, "version": ns.version}.items() if v}
-    if ns.tool == "note_capture": return {"content": ns.content}
-    if ns.tool == "report_status": return {}
-    if ns.tool == "file_search": return {k: v for k, v in {"pattern": ns.pattern, "path": ns.path}.items() if v}
-    if ns.tool in {"read_file", "flag_grep"}: return {"path": ns.path}
-    raise ValueError("Use --args for this tool.")
+    # repl subcommand (default if no subcommand)
+    subparsers.add_parser("repl", help="Start the interactive REPL session")
 
+    # tools subcommand
+    subparsers.add_parser("tools", help="List tools defined in the catalog")
 
-def _run(name: str, args: dict[str, Any], config: dict[str, Any]) -> None:
-    tool = TOOLS[name]
-    Gate().authorize(tool, args, config)
-    if tool.executable == "internal":
-        if name == "note_capture":
-            record_note(args["content"]); output = "Note saved to session memory."
-        elif name == "file_search": output = "\n".join(search_artifacts(args["pattern"], args.get("path"))) or "No matching session artifacts."
-        elif name == "read_file": output = read_artifact(args["path"])
-        elif name == "flag_grep":
-            from .session import FLAG_PATTERN
-            output = "\n".join(FLAG_PATTERN.findall(read_artifact(args["path"]))) or "No flag pattern found."
-        else: output = json.dumps(load_session(), indent=2)
-        code = 0
-    else:
-        timeout = int(config.get("timeouts", {}).get(tool.name, config.get("timeouts", {}).get("default", 120)))
-        code, output = execute(tool, args, timeout)
-    summary = summarize(tool.name, output)
-    print(f"[ok] {tool.name} (exit {code})")
-    print("\n".join(summary))
-    flags = record(tool.name, args, code, output, config["phase"], summary)
-    history = config.setdefault("phase_history", [])
-    history.append({"tool": tool.name, "phase": tool.phase.value, "exit_code": code})
-    if tool.phase is Phase.RECON and config["phase"] == Phase.RECON:
-        config["phase"] = Phase.ENUMERATION
-    elif tool.phase is Phase.ENUMERATION and config["phase"] == Phase.ENUMERATION:
-        successful_enum = sum(1 for item in history if item["phase"] == Phase.ENUMERATION and item["exit_code"] == 0)
-        if successful_enum >= 2: config["phase"] = Phase.EXPLOITATION
-    config_path().write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    if flags: print("\n[!] possible flag found: " + ", ".join(flags))
+    # status subcommand
+    status_parser = subparsers.add_parser("status", help="Show system status and session details")
+    status_parser.add_argument("--json", action="store_true", help="Output as JSON")
 
+    # init subcommand
+    init_parser = subparsers.add_parser("init", help="Initialize or refresh lab scope and config")
+    init_parser.add_argument("scope", nargs="?", help="Target IP or CIDR scope to add")
 
-def _status(as_json: bool) -> None:
-    config, session, models = load_config(), load_session(), _ollama_models()
-    if as_json:
-        print(json.dumps({"version": __version__, "config": config, "models": sorted(models), "session": session}, indent=2)); return
-    reasoner = config["models"]["reasoner"]
-    print(f"NEX v{__version__}\n{'-' * 30}")
-    print(f"Reasoner:        {reasoner:<20} {'READY' if reasoner in models else 'NOT INSTALLED'}")
-    print(f"Tool-caller:     {'enabled' if config['models'].get('tool_caller') else 'not enabled'}")
-    print(f"Scope:           {', '.join(config['scope'])}\nPhase:           {config['phase']}")
-    print(f"Tools available: {len(TOOLS)} SAFE wrappers\nSession log:     {len(session['actions'])} actions run, {len(session['flags'])} possible flags")
-    if session.get("objective"): print(f"Objective:       {session['objective']}")
-
-
-def _interactive() -> None:
-    config, session = load_config(), load_session()
-    try: import questionary
-    except ImportError: raise RuntimeError("Interactive mode requires questionary. Run 'pip install -e .' to install dependencies.")
-    print(f"CyberEDT NEX | scope: {', '.join(config['scope'])} | phase: {config['phase']}")
-    choice = questionary.select("What do you want to do:", choices=["Run a recon scan", "Run enumeration", "View findings so far", "Quit"]).ask()
-    if not choice or choice == "Quit": return
-    if choice == "View findings so far": print(json.dumps(session, indent=2)); return
-    phase = Phase.RECON if choice == "Run a recon scan" else Phase.ENUMERATION
-    names = [name for name, tool in TOOLS.items() if tool.phase is phase]
-    name = questionary.select(f"{phase.value.title()} tool:", choices=names + ["< back"]).ask()
-    if not name or name == "< back": return
-    target = questionary.text("Target:", default=session.get("last_target") or "").ask()
-    if not target: return
-    if not in_scope(target, config["scope"]):
-        print("Target is outside the authorized scope. For public targets, use: nex init <target> --i-own-this --authorized")
-        return
-    args: dict[str, Any] = {"target": target}
-    if name == "nmap_scan": args["scan_type"] = questionary.select("Scan type:", choices=["quick", "full", "udp"]).ask()
-    elif name in {"whatweb_scan", "nikto_scan", "gobuster_dir"}: args["target"] = _web(target)
-    if name == "gobuster_dir": args["wordlist"] = questionary.select("Wordlist:", choices=["small", "medium", "large"]).ask()
-    if name == "dns_enum": args = {"domain": target, "mode": "subdomains"}
-    if name == "service_probe": args["port"] = int(questionary.text("Port:", default="80").ask() or "80")
-    _run(name, args, config)
+    return parser
 
 
 def main() -> None:
-    if len(sys.argv) == 1:
-        try: _interactive()
-        except (ValueError, GateError, RuntimeError) as exc: print(f"NEX blocked: {exc}", file=sys.stderr)
-        return
-    if len(sys.argv) > 1 and sys.argv[1] == "help": sys.argv[1:] = ["--help"]
-    parser = argparse.ArgumentParser(prog="nex", description="Gated orchestration for authorized security labs")
-    subs = parser.add_subparsers(dest="command", required=True)
-    init = subs.add_parser("init", help="Auto-detect lab scope and refresh configuration")
-    init.add_argument("scope", nargs="?"); init.add_argument("--authorized", action="store_true"); init.add_argument("--i-own-this", action="store_true"); init.add_argument("--dual", action="store_true")
-    status = subs.add_parser("status"); status.add_argument("--json", action="store_true")
-    subs.add_parser("tools"); subs.add_parser("report", help="Write nex-report.md from session memory")
-    subs.add_parser("findings", help="Show persistent structured findings")
-    subs.add_parser("artifacts", help="List captured raw session artifacts")
-    raw = subs.add_parser("raw", help="Display raw output for an action number"); raw.add_argument("action", type=int)
-    objective = subs.add_parser("objective", help="Set the current session objective"); objective.add_argument("text")
-    subs.add_parser("resume", help="Show the persisted session summary")
-    config_parser = subs.add_parser("config"); config_subs = config_parser.add_subparsers(dest="config_command", required=True)
-    config_subs.add_parser("show")
-    scope_parser = config_subs.add_parser("add-scope"); scope_parser.add_argument("scope"); scope_parser.add_argument("--authorized", action="store_true"); scope_parser.add_argument("--i-own-this", action="store_true")
-    quick = subs.add_parser("quick", help="Run SAFE recon and enumeration starter chain"); quick.add_argument("target")
-    run = subs.add_parser("run", help="Run a registered tool with normal flags")
-    run.add_argument("tool", choices=sorted(TOOLS)); run.add_argument("--args"); run.add_argument("--target"); run.add_argument("--domain"); run.add_argument("--ports"); run.add_argument("--port", type=int)
-    run.add_argument("--quick", action="store_true"); run.add_argument("--full", action="store_true"); run.add_argument("--udp", action="store_true")
-    run.add_argument("--wordlist", choices=["small", "medium", "large"], default="small"); run.add_argument("--mode", choices=["subdomains", "records"], default="subdomains")
-    run.add_argument("--service-name"); run.add_argument("--version"); run.add_argument("--content"); run.add_argument("--pattern"); run.add_argument("--path")
-    ns = parser.parse_args()
+    parser = build_arg_parser()
+    args = parser.parse_args()
+
+    project_root = find_project_root()
+    catalog_path = Path(args.catalog) if args.catalog else project_root / "catalog.yaml"
+    config_data = load_config(args.config)
+
+    # Load and validate catalog (fail fast)
     try:
-        if ns.command == "init":
-            if ns.scope: _confirm_public_scope(ns.scope, ns.authorized, ns.i_own_this)
-            path, detected = initialize([ns.scope] if ns.scope else None, ns.authorized)
-            print("NEX SETUP\n" + "-" * 30)
-            print(f"[ok] Ollama {'detected' if shutil.which('ollama') else 'not found'}")
-            print(f"[ok] Session scope refreshed: {', '.join(detected) if detected else 'RFC1918 private ranges'}")
-            _offer_model(REASONER_MODEL)
-            if ns.dual: _offer_model(TOOL_CALLER_MODEL)
-            print(f"[ok] Config: {path}\nNEX is ready. Run 'nex quick <target>' or bare 'nex' for the menu."); return
-        if ns.command == "tools":
-            for tool in TOOLS.values(): print(f"{tool.name:18} {tool.phase.value:14} {tool.risk.value}")
-            return
-        if ns.command == "status": _status(ns.json); return
-        if ns.command == "resume": _status(False); return
-        if ns.command == "objective": set_objective(ns.text); print("Session objective saved."); return
-        if ns.command == "findings":
-            findings = load_session()["findings"]
-            print(json.dumps(findings, indent=2) if findings else "No findings recorded."); return
-        if ns.command == "artifacts":
-            actions = load_session()["actions"]
-            if not actions: print("No captured artifacts.")
-            for index, action in enumerate(actions, start=1): print(f"{index}: {action.get('raw_output', 'none')} ({action['tool']})")
-            return
-        if ns.command == "raw": print(action_artifact(ns.action).read_text(encoding="utf-8", errors="replace")); return
-        if ns.command == "config":
-            if ns.config_command == "show": print(json.dumps(load_config(), indent=2))
-            else:
-                _confirm_public_scope(ns.scope, ns.authorized, ns.i_own_this)
-                add_scope(ns.scope, ns.authorized); print(f"Added authorized scope: {ns.scope}")
-            return
-        if ns.command == "report":
-            path = Path.cwd() / "nex-report.md"; path.write_text(markdown_report(load_config()), encoding="utf-8"); print(f"Wrote {path}"); return
-        if ns.command == "quick":
-            config = load_config()
-            if not in_scope(ns.target, config["scope"]): raise GateError("Target is outside scope. Run 'nex init <target> --authorized' first.")
-            _run("nmap_scan", {"target": ns.target, "scan_type": "quick"}, config)
-            _run("nmap_scan", {"target": ns.target, "scan_type": "full"}, config)
-            _run("whatweb_scan", {"target": _web(ns.target)}, config)
-            config["phase"] = "enumeration"; config_path().write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-            _run("gobuster_dir", {"target": _web(ns.target), "wordlist": "small"}, config)
-            print("Quick chain complete. No CONFIRM-tier action was run."); return
-        _run(ns.tool, _flat_args(ns), load_config())
-    except (ValueError, GateError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        print(f"NEX blocked: {exc}", file=sys.stderr); raise SystemExit(2)
+        catalog = Catalog.from_yaml_file(catalog_path)
+    except CatalogValidationError as exc:
+        print(f"{RED}[FATAL] Catalog validation failed: {exc}{RESET}", file=sys.stderr)
+        sys.exit(1)
+
+    # Memory setup
+    if args.ephemeral:
+        db_path = ":memory:"
+    else:
+        db_path = project_root / config_data.get("session", {}).get("memory_db_path", ".nex/session.db")
+
+    artifacts_dir = project_root / config_data.get("session", {}).get("artifacts_dir", ".nex/raw")
+    memory = SessionMemory(db_path=db_path, artifacts_dir=artifacts_dir)
+
+    # Populate scope from config and command-line
+    for scope_item in config_data.get("scope", {}).get("allowed_targets", []):
+        memory.add_scope(scope_item)
+
+    if args.target:
+        memory.add_scope(args.target)
+
+    # Set initial phase if specified
+    if args.phase:
+        memory.set_phase(args.phase)
+
+    # Subcommand dispatch
+    if args.subcommand == "tools":
+        print(f"CyberEDT NEX Tool Catalog ({len(catalog.tools)} tools registered):\n")
+        for phase in catalog.phases:
+            tools = catalog.get_tools_for_phase(phase, include_utility=False)
+            if tools:
+                print(f"[{phase.upper()}]")
+                for t in tools:
+                    print(f"  * {t.name:<15} [{t.approval_tier}] - {t.description}")
+        sys.exit(0)
+
+    if args.subcommand == "status":
+        status_info = {
+            "version": __version__,
+            "phase": memory.get_phase(),
+            "scope": memory.get_scope(),
+            "tools_count": len(catalog.tools),
+            "ephemeral": args.ephemeral,
+            "database": str(db_path),
+            "history_count": len(memory.get_recent_history(limit=100)),
+            "findings_count": len(memory.get_findings()),
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(status_info, indent=2))
+        else:
+            print(f"NEX Status (v{__version__}):")
+            print(f"  Active Phase:   {status_info['phase']}")
+            print(f"  Scope Count:    {len(status_info['scope'])}")
+            print(f"  Catalog Tools:  {status_info['tools_count']}")
+            print(f"  Database:       {status_info['database']}")
+        sys.exit(0)
+
+    if args.subcommand == "init":
+        if args.scope:
+            memory.add_scope(args.scope)
+            print(f"[+] Added scope: {args.scope}")
+        print("[+] NEX initialization complete. Scope refreshed.")
+        sys.exit(0)
+
+    # Initialize Planner and Controller
+    planner_cfg = config_data.get("models", {})
+    planner = Planner(
+        catalog=catalog,
+        memory=memory,
+        planner_model_path=project_root / planner_cfg.get("planner_model_path", "models/qwen3-0.6b-instruct.Q4_K_M.gguf"),
+        tool_caller_model_path=project_root / planner_cfg.get("tool_caller_model_path", "models/functiongemma-270m-it.Q8_0.gguf"),
+        dual_mode=args.dual or planner_cfg.get("dual_mode", False),
+        temperature=planner_cfg.get("temperature", 0.1),
+    )
+
+    controller = Controller(
+        catalog=catalog,
+        memory=memory,
+        default_timeout=config_data.get("execution", {}).get("default_timeout_seconds", 300),
+    )
+
+    # Launch interactive REPL
+    repl = NexREPL(
+        catalog=catalog,
+        memory=memory,
+        planner=planner,
+        controller=controller,
+        dual_mode=args.dual or planner_cfg.get("dual_mode", False),
+    )
+    repl.run()
 
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    main()

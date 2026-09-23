@@ -4,11 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cyberedtnex"
-version = "0.4.0"
-description = "Offline, gated security-tool orchestration for authorized labs"
-requires-python = ">=3.10"
+version = "1.0.0"
+description = "NEX: Offline AI Assistant for Authorized Security Training Labs"
+readme = "README.md"
+requires-python = ">=3.11"
 authors = [{name = "CyberEDT NEX"}]
-dependencies = ["questionary>=2.0", "rich>=13.0"]
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+inference = [
+    "llama-cpp-python>=0.2.70",
+]
+test = [
+    "pytest>=7.0",
+]
 
 [project.scripts]
 nex = "nex.cli:main"
@@ -18,3 +29,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

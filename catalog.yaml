@@ -1,0 +1,352 @@
+# CyberEDT NEX - Tool Catalog
+# Schema version 1.0
+# Defines authorized security utilities organized by training phase.
+# All entries are schema-validated at startup.
+
+version: "1.0"
+
+phases:
+  - reconnaissance
+  - service_enumeration
+  - vulnerability_assessment
+  - post_engagement_review
+  - utility
+
+tools:
+  # ==========================================
+  # Phase: reconnaissance
+  # ==========================================
+  - name: nmap
+    phase: reconnaissance
+    approval_tier: AUTO
+    description: "Network exploration and service discovery tool. Discovers open ports, running services, and protocol versions on target hosts."
+    command_template:
+      - "nmap"
+      - "{flags}"
+      - "{target}"
+    parser: parse_nmap
+    timeout_seconds: 300
+    parameters:
+      target:
+        type: string
+        required: true
+        description: "Target IP address or hostname in authorized scope"
+      flags:
+        type: string
+        required: false
+        default: "-sV -sC --top-ports 100"
+        description: "Nmap scan arguments (e.g. -sV, -sC, -p-, --top-ports 100)"
+
+  - name: whois
+    phase: reconnaissance
+    approval_tier: AUTO
+    description: "WHOIS directory search client. Queries domain registration details, registrar, and DNS name servers."
+    command_template:
+      - "whois"
+      - "{domain}"
+    parser: parse_whois
+    timeout_seconds: 60
+    parameters:
+      domain:
+        type: string
+        required: true
+        description: "Domain name to look up"
+
+  - name: dig
+    phase: reconnaissance
+    approval_tier: AUTO
+    description: "DNS lookup utility for querying DNS name servers for address records, MX records, and zone nameservers."
+    command_template:
+      - "dig"
+      - "{record_type}"
+      - "{domain}"
+      - "+noall"
+      - "+answer"
+    parser: parse_dig
+    timeout_seconds: 60
+    parameters:
+      domain:
+        type: string
+        required: true
+        description: "Target domain name or hostname"
+      record_type:
+        type: string
+        required: false
+        default: "ANY"
+        description: "DNS record type to query (A, AAAA, MX, NS, TXT, ANY)"
+
+  # ==========================================
+  # Phase: service_enumeration
+  # ==========================================
+  - name: gobuster
+    phase: service_enumeration
+    approval_tier: AUTO
+    description: "Web content and directory discovery tool using wordlist brute-forcing."
+    command_template:
+      - "gobuster"
+      - "dir"
+      - "-u"
+      - "{url}"
+      - "-w"
+      - "{wordlist}"
+      - "-q"
+    parser: parse_gobuster
+    timeout_seconds: 300
+    parameters:
+      url:
+        type: string
+        required: true
+        description: "Target HTTP or HTTPS base URL"
+      wordlist:
+        type: string
+        required: false
+        default: "/usr/share/wordlists/dirb/common.txt"
+        description: "Path to wordlist file for directory discovery"
+
+  - name: enum4linux
+    phase: service_enumeration
+    approval_tier: AUTO
+    description: "SMB and Samba enumeration tool for extracting shares, users, and OS details."
+    command_template:
+      - "enum4linux"
+      - "{options}"
+      - "{target}"
+    parser: parse_enum4linux
+    timeout_seconds: 300
+    parameters:
+      target:
+        type: string
+        required: true
+        description: "Target IP address or hostname"
+      options:
+        type: string
+        required: false
+        default: "-U -S"
+        description: "Enum4linux enumeration options (e.g. -U for users, -S for shares, -a for all)"
+
+  - name: smbclient
+    phase: service_enumeration
+    approval_tier: AUTO
+    description: "SMB/CIFS client utility to query and list available network shares anonymously or with credentials."
+    command_template:
+      - "smbclient"
+      - "-L"
+      - "{target}"
+      - "-N"
+    parser: parse_smbclient
+    timeout_seconds: 60
+    parameters:
+      target:
+        type: string
+        required: true
+        description: "Target IP or hostname to enumerate SMB shares from"
+
+  # ==========================================
+  # Phase: vulnerability_assessment
+  # All entries in this phase are APPROVAL tier — they actively probe or
+  # interact with target services in a way that leaves log traces and can
+  # alter server state.  Operator must confirm each invocation.
+  # ==========================================
+
+  - name: sqlmap
+    phase: vulnerability_assessment
+    # APPROVAL: actively sends crafted payloads to the target HTTP service;
+    # can modify database state if --level/--risk is elevated.
+    approval_tier: APPROVAL
+    description: >
+      Automated database-input testing utility. Detects and exploits SQL
+      injection vulnerabilities in web application parameters.
+      Requires explicit operator approval before each run.
+    command_template:
+      - "sqlmap"
+      - "-u"
+      - "{url}"
+      - "--batch"
+      - "--output-dir"
+      - "{output_dir}"
+    parser: parse_sqlmap
+    # Long-running; complex apps may need many requests
+    timeout_seconds: 600
+    parameters:
+      url:
+        type: string
+        required: true
+        description: "Target URL with parameter(s) to test, e.g. http://target/page?id=1"
+      output_dir:
+        type: string
+        required: false
+        default: ".nex/sqlmap"
+        description: "Directory where sqlmap writes its session and result files"
+      extra_args:
+        type: string
+        required: false
+        default: ""
+        description: "Additional sqlmap flags, e.g. '--level 2 --risk 1 --dbs'"
+
+  - name: hydra
+    phase: vulnerability_assessment
+    # APPROVAL: sends authentication attempts across the network; generates
+    # significant auth-failure log noise and can trigger account lockouts.
+    approval_tier: APPROVAL
+    description: >
+      Network credential-testing utility for authorized password-policy
+      validation.  Supports many service protocols (ssh, ftp, http-form, smb…).
+      Requires explicit operator approval before each run.
+    command_template:
+      - "hydra"
+      - "-L"
+      - "{userlist}"
+      - "-P"
+      - "{passlist}"
+      - "{target}"
+      - "{service}"
+    parser: parse_hydra
+    # Account lockout policies vary; 300 s covers most small wordlists
+    timeout_seconds: 300
+    parameters:
+      target:
+        type: string
+        required: true
+        description: "Target IP address or hostname"
+      service:
+        type: string
+        required: true
+        description: "Protocol/service to test, e.g. ssh, ftp, http-form-post, smb"
+      userlist:
+        type: string
+        required: true
+        description: "Path to username list file"
+      passlist:
+        type: string
+        required: true
+        description: "Path to password list file"
+      extra_args:
+        type: string
+        required: false
+        default: ""
+        description: "Additional hydra flags, e.g. '-t 4 -f -V'"
+
+  - name: metasploit
+    phase: vulnerability_assessment
+    # APPROVAL: invokes the Metasploit Framework; resource scripts can open
+    # sessions, run payloads, or make network connections to targets.
+    approval_tier: APPROVAL
+    description: >
+      Standard training-framework console (msfconsole) invoked with a
+      resource-script argument.  Resource scripts are plain text files listing
+      msfconsole commands to run.  Requires explicit operator approval before
+      each run.
+    command_template:
+      - "msfconsole"
+      - "-q"
+      - "-r"
+      - "{resource_script}"
+    parser: parse_metasploit
+    # Framework and module load time is variable; 900 s for complex scripts
+    timeout_seconds: 900
+    parameters:
+      resource_script:
+        type: string
+        required: true
+        description: "Path to a Metasploit resource (.rc) script to execute"
+
+  # ==========================================
+  # Phase: post_engagement_review
+  # APPROVAL tier — these scripts run on the target system (or against
+  # captured artifacts) and enumerate privileged information.
+  # ==========================================
+
+  - name: linpeas
+    phase: post_engagement_review
+    # APPROVAL: runs an extensive enumeration script that reads sensitive files,
+    # checks SUID/SGID bits, cron jobs, and writable paths — high noise signal.
+    approval_tier: APPROVAL
+    description: >
+      Linux privilege-escalation checklist script (linpeas.sh).  Enumerates
+      SUID/SGID binaries, writable paths, cron jobs, kernel CVEs, and other
+      vectors that may allow privilege escalation.
+      Requires explicit operator approval before each run.
+    command_template:
+      - "bash"
+      - "{script_path}"
+      - "-a"
+    parser: parse_linpeas
+    # Full system enumeration can take several minutes
+    timeout_seconds: 600
+    parameters:
+      script_path:
+        type: string
+        required: true
+        description: "Path to linpeas.sh on the target system or locally"
+
+  - name: pspy
+    phase: post_engagement_review
+    # APPROVAL: monitors all running processes including those of other users;
+    # can reveal sensitive command-line arguments in real time.
+    approval_tier: APPROVAL
+    description: >
+      Unprivileged process spy utility (pspy).  Monitors new process creation
+      events, revealing cron-triggered scripts, scheduled tasks, and commands
+      run by other users without requiring root.
+      Requires explicit operator approval before each run.
+    command_template:
+      - "{binary_path}"
+      - "-pf"
+      - "-i"
+      - "{interval_ms}"
+    parser: parse_pspy
+    # Time-bounded observation window — operator adjusts timeout as needed
+    timeout_seconds: 120
+    parameters:
+      binary_path:
+        type: string
+        required: true
+        description: "Path to pspy32 or pspy64 binary on the target system"
+      interval_ms:
+        type: string
+        required: false
+        default: "100"
+        description: "Polling interval in milliseconds (default 100)"
+
+  # ==========================================
+  # Phase: utility
+  # ==========================================
+  - name: http_server
+    phase: utility
+    approval_tier: AUTO
+    description: "Local utility to host a temporary HTTP server for authorized file transfers within the lab environment."
+    command_template:
+      - "python3"
+      - "-m"
+      - "http.server"
+      - "{port}"
+      - "--directory"
+      - "{directory}"
+    parser: parse_http_server
+    timeout_seconds: 30
+    parameters:
+      port:
+        type: integer
+        required: false
+        default: 8000
+        description: "Port to bind local HTTP server to"
+      directory:
+        type: string
+        required: false
+        default: "."
+        description: "Directory path to serve files from"
+
+  - name: note_capture
+    phase: utility
+    approval_tier: AUTO
+    description: "Internal utility to capture operator notes, flags, or observations directly into session memory."
+    command_template:
+      - "internal:note_capture"
+      - "{content}"
+    parser: parse_note_capture
+    timeout_seconds: 10
+    parameters:
+      content:
+        type: string
+        required: true
+        description: "Note content or flag string to store in session log"

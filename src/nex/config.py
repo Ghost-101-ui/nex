@@ -1,27 +1,37 @@
 from __future__ import annotations
 
-import json
 import ipaddress
+import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 from typing import Any
 
-CONFIG_NAME = "nex.config.json"
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore
+
+CONFIG_YAML_NAME = "config.yaml"
+CONFIG_JSON_NAME = "nex.config.json"
 
 
-def config_path() -> Path:
-    return Path.cwd() / CONFIG_NAME
+def find_project_root() -> Path:
+    """Find the root directory of the NEX project."""
+    # Check current directory
+    cwd = Path.cwd()
+    if (cwd / CONFIG_YAML_NAME).exists() or (cwd / "catalog.yaml").exists():
+        return cwd
+    # Check parent directories
+    for parent in Path(__file__).resolve().parents:
+        if (parent / CONFIG_YAML_NAME).exists() or (parent / "catalog.yaml").exists():
+            return parent
+    return cwd
 
 
-def load_config() -> dict[str, Any]:
-    path = config_path()
-    if not path.exists():
-        raise ValueError(f"Missing {CONFIG_NAME}; run 'nex init --scope <lab-scope>'.")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data.get("scope"), list) or not data["scope"]:
-        raise ValueError("Configuration must contain a non-empty scope list.")
-    return data
+def config_yaml_path() -> Path:
+    return find_project_root() / CONFIG_YAML_NAME
 
 
 def private_scopes() -> list[str]:
@@ -29,7 +39,7 @@ def private_scopes() -> list[str]:
 
 
 def is_auto_trusted_scope(item: str) -> bool:
-    """RFC1918 is convenient for labs; every other scope needs ownership confirmation."""
+    """RFC1918 is convenient for labs; public IPs require explicit operator authorization."""
     try:
         return ipaddress.ip_network(item, strict=False).is_private
     except ValueError:
@@ -37,7 +47,7 @@ def is_auto_trusted_scope(item: str) -> bool:
 
 
 def vpn_scopes() -> list[str]:
-    """Discover tunnel interfaces on Linux without requiring a network call."""
+    """Discover tunnel interfaces on Linux without requiring network calls."""
     if not shutil.which("ip"):
         return []
     try:
@@ -55,32 +65,73 @@ def vpn_scopes() -> list[str]:
     return scopes
 
 
-def initialize(scope: list[str] | None = None, authorized: bool = False) -> tuple[Path, list[str]]:
-    path = config_path()
-    detected = [*private_scopes(), *vpn_scopes()]
-    requested = scope or []
-    if requested and not authorized:
-        for item in requested:
-            if not is_auto_trusted_scope(item):
-                raise ValueError("Adding a public scope requires --authorized.")
-    if path.exists():
-        data = load_config()
+DEFAULT_CONFIG: dict[str, Any] = {
+    "version": "1.0",
+    "models": {
+        "planner_model_path": "models/qwen3-0.6b-instruct.Q4_K_M.gguf",
+        "tool_caller_model_path": "models/functiongemma-270m-it.Q8_0.gguf",
+        "dual_mode": False,
+        "temperature": 0.1,
+        "context_size": 2048,
+    },
+    "execution": {
+        "default_timeout_seconds": 300,
+        "auto_trust_private": True,
+        "auto_detect_vpn": True,
+    },
+    "session": {
+        "memory_db_path": ".nex/session.db",
+        "artifacts_dir": ".nex/raw",
+        "log_level": "INFO",
+    },
+    "scope": {
+        "allowed_targets": [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+        ],
+    },
+}
+
+
+def load_config(path: str | Path | None = None) -> dict[str, Any]:
+    """Load configuration from config.yaml or fallback to defaults."""
+    cfg_file = Path(path) if path else config_yaml_path()
+    
+    config = dict(DEFAULT_CONFIG)
+    if cfg_file.exists() and yaml is not None:
+        try:
+            loaded = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                # Deep merge top-level sections
+                for sec, val in loaded.items():
+                    if isinstance(val, dict) and isinstance(config.get(sec), dict):
+                        config[sec].update(val)
+                    else:
+                        config[sec] = val
+        except Exception:
+            pass
+
+    # Ensure scopes include RFC1918 and detected VPN if enabled
+    scope_list = list(config.get("scope", {}).get("allowed_targets", []))
+    if config.get("execution", {}).get("auto_trust_private", True):
+        for ps in private_scopes():
+            if ps not in scope_list:
+                scope_list.append(ps)
+
+    if config.get("execution", {}).get("auto_detect_vpn", True):
+        for vs in vpn_scopes():
+            if vs not in scope_list:
+                scope_list.append(vs)
+
+    config.setdefault("scope", {})["allowed_targets"] = scope_list
+    return config
+
+
+def save_config(config: dict[str, Any], path: str | Path | None = None) -> None:
+    cfg_file = Path(path) if path else config_yaml_path()
+    if yaml is not None:
+        cfg_file.write_text(yaml.safe_dump(config, indent=2, sort_keys=False), encoding="utf-8")
     else:
-        data = {"scope": [], "phase": "recon", "phase_history": [], "timeouts": {"default": 120, "nikto_scan": 600},
-                "models": {"reasoner": "qwen3:0.6b", "tool_caller": None}}
-    for item in [*detected, *requested]:
-        if item not in data["scope"]:
-            data["scope"].append(item)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return path, detected
-
-
-def add_scope(scope_item: str, authorized: bool = False) -> dict[str, Any]:
-    """Add one deliberately supplied authorized lab scope without replacing existing scope."""
-    if not is_auto_trusted_scope(scope_item) and not authorized:
-        raise ValueError("Refusing to change scope without an authorization acknowledgement.")
-    data = load_config()
-    if scope_item not in data["scope"]:
-        data["scope"].append(scope_item)
-        config_path().write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return data
+        # Fallback to json-styled representation or raw write
+        cfg_file.write_text(json.dumps(config, indent=2), encoding="utf-8")

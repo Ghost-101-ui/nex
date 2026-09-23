@@ -1,0 +1,39 @@
+# CyberEDT NEX - Configuration File
+# Default configuration for models, execution timeouts, and session persistence.
+
+version: "1.0"
+
+models:
+  # Primary reasoning and planning model (GGUF path)
+  planner_model_path: "models/qwen3-0.6b-instruct.Q4_K_M.gguf"
+  # Secondary structured tool caller (used in dual mode)
+  tool_caller_model_path: "models/functiongemma-270m-it.Q8_0.gguf"
+  # Default dual-mode flag (true = Qwen3 reasons + FunctionGemma structures request)
+  dual_mode: false
+  # Temperature for local generation
+  temperature: 0.1
+  # Maximum context window tokens
+  context_size: 2048
+
+execution:
+  # Default execution timeout in seconds
+  default_timeout_seconds: 300
+  # Automatically trust RFC1918 private IP ranges
+  auto_trust_private: true
+  # Automatically detect Linux VPN/tunnel subnets (tun*, wg*, tap*, ppp*)
+  auto_detect_vpn: true
+
+session:
+  # Path to SQLite database file for persistent session state
+  memory_db_path: ".nex/session.db"
+  # Directory where raw command outputs are saved
+  artifacts_dir: ".nex/raw"
+  # Logging verbosity: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+
+scope:
+  # Pre-authorized lab networks
+  allowed_targets:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
