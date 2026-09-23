@@ -298,7 +298,10 @@ class NexREPL:
                 continue
 
             # Process natural language request via Planner & Controller
-            self.handle_natural_language(user_input)
+            try:
+                self.handle_natural_language(user_input)
+            except KeyboardInterrupt:
+                print(f"\n{YELLOW}[!] Cancelled.{RESET}\n")
 
     def handle_slash_command(self, cmd_line: str) -> None:
         parts = cmd_line.split(maxsplit=1)
@@ -458,9 +461,18 @@ class NexREPL:
 
         # Step 1: Planner constructs structured request
         try:
-            print(f"{DIM}Thinking...{RESET}", end="\r")
+            print(f"{DIM}Thinking... (Ctrl+C to cancel){RESET}", end="\r")
             plan_req = self.planner.plan(user_input, dual=self.dual_mode)
+            sys.stdout.write("\r" + " " * 45 + "\r")
+            sys.stdout.flush()
+        except KeyboardInterrupt:
+            sys.stdout.write("\r" + " " * 45 + "\r")
+            sys.stdout.flush()
+            print(f"{YELLOW}[!] Thinking cancelled (Ctrl+C).{RESET}\n")
+            return
         except PlannerError as exc:
+            sys.stdout.write("\r" + " " * 45 + "\r")
+            sys.stdout.flush()
             print(f"{RED}[!] Planner Error: {exc}{RESET}")
             return
 
