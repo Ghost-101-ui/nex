@@ -30,6 +30,7 @@ from .controller import Controller, ControllerError, ExecutionResult
 from .memory import SessionMemory
 from .models_manager import download_models, install_llama_cpp_runtime
 from .planner import Planner, PlannerError
+from .tool_checker import print_tools_checkup
 
 
 # ANSI styling
@@ -241,7 +242,7 @@ def print_banner(
         f"    {CYAN}/phase <1-5>{RESET} Switch phase (or /p) {CYAN}/target <ip>{RESET}  Set target (or /t)\n"
         f"    {CYAN}/history{RESET}     Show action log       {CYAN}/f{RESET}          Show full raw output\n"
         f"    {CYAN}/scope{RESET}       View/add scope        {CYAN}/dual{RESET}       Toggle dual mode\n"
-        f"    {CYAN}/tools{RESET}       List tools            {CYAN}/findings{RESET}   Show findings\n"
+        f"    {CYAN}/tools{RESET}       List tools            {CYAN}/check{RESET}       Audit OS tools\n"
         f"    {CYAN}/models{RESET}      Check LLM status      {CYAN}/exit{RESET}        Exit session\n"
     )
     print(banner)
@@ -418,13 +419,19 @@ class NexREPL:
                 print(f"[+] Added to authorized lab scope: {GREEN}{arg}{RESET}")
 
         elif cmd == "/tools":
+            if arg in ("check", "c", "-c", "--check"):
+                print_tools_checkup(self.catalog)
+                return
             current_phase = self.memory.get_phase()
             tools = self.catalog.get_tools_for_phase(current_phase)
             print(f"\n{BOLD}Tools for phase '{current_phase}' (and utility):{RESET}")
             for t in tools:
                 tier_color = GREEN if t.approval_tier == "AUTO" else YELLOW
                 print(f"  * {BOLD}{t.name:<14}{RESET} [{tier_color}{t.approval_tier}{RESET}] ({t.phase}) - {t.description}")
-            print()
+            print(f"\n{DIM}[Tip: Type /check to verify if these tools are installed in the OS]{RESET}\n")
+
+        elif cmd in ("/check", "/doctor"):
+            print_tools_checkup(self.catalog)
 
         elif cmd in ("/models", "/m"):
             project_root = find_project_root()
@@ -451,6 +458,7 @@ class NexREPL:
   /scope [target]  View or add authorized IP/subnet/domain scope
   /findings        View all structured findings extracted by Summarizer
   /tools           List catalog tools available for current phase
+  /check           Audit whether catalog tools are installed in the OS (or /doctor)
   /exit            Exit the session
 """)
         else:
@@ -580,7 +588,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("repl", help="Start the interactive REPL session")
 
     # tools subcommand
-    subparsers.add_parser("tools", help="List tools defined in the catalog")
+    tools_parser = subparsers.add_parser("tools", help="List tools defined in the catalog")
+    tools_parser.add_argument("--check", action="store_true", help="Check which catalog tools are installed in the OS")
+
+    # check / doctor subcommand
+    subparsers.add_parser("check", help="Audit OS environment to check which catalog tools are installed")
+    subparsers.add_parser("doctor", help="Audit OS environment to check which catalog tools are installed (alias)")
 
     # models subcommand
     models_parser = subparsers.add_parser("models", help="Check, download, or install local GGUF models")
@@ -640,7 +653,14 @@ def main() -> None:
             print(f"{RED}[WARN] Unknown phase '{args.phase}'. Using default phase.{RESET}")
 
     # Subcommand dispatch
+    if args.subcommand in ("check", "doctor"):
+        print_tools_checkup(catalog)
+        sys.exit(0)
+
     if args.subcommand == "tools":
+        if getattr(args, "check", False):
+            print_tools_checkup(catalog)
+            sys.exit(0)
         print(f"CyberEDT NEX Tool Catalog ({len(catalog.tools)} tools registered):\n")
         for phase in catalog.phases:
             tools = catalog.get_tools_for_phase(phase, include_utility=False)

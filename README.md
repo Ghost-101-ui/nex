@@ -210,7 +210,9 @@ Summary:
 ### CLI subcommands (non-interactive)
 
 ```bash
+nex check              # audit OS environment: check which catalog tools are installed
 nex tools              # list all catalog tools
+nex tools --check      # audit tool binary presence in system PATH
 nex status             # human-readable session status
 nex status --json      # machine-readable JSON
 nex --target 10.10.10.5   # pre-add a scope target and start REPL
@@ -247,12 +249,14 @@ NEX organizes tools by authorized engagement phase. You can switch phases instan
 | `/phase` or `/p` | View all available numbered phases and current active phase |
 | `/target <ip>` or `/t <ip>` | Set active lab target & add to scope (interactive shortcut for `nex --target`) |
 | `/target clear` or `/t clear` | Clear active target |
+| `/check` or `/doctor` | Audit OS environment: verify which catalog tools are installed |
+| `/tools` | List catalog tools available for the current phase |
+| `/tools check` | Audit OS environment to verify tool availability |
 | `/history` | Show last 15 tool invocations with status |
 | `/f` | Expand last result to full raw output |
 | `/dual` | Toggle dual-model mode at runtime |
 | `/scope [target]` | View authorized scope or add a new target |
 | `/findings` | List all structured findings extracted by Summarizer |
-| `/tools` | List tools available for the current phase |
 | `/models` or `/m` | Check GGUF model files and inference runtime status |
 | `/models download` or `/m download` | Download default GGUF model weights into `models/` |
 | `/models install` or `/m install` | Install `llama-cpp-python` inference engine via pip |
