@@ -108,3 +108,31 @@ class TestCliSlashCommands(unittest.TestCase):
         # Invalid phase number does not crash
         self.repl.handle_slash_command("/p 99")
         self.assertEqual(self.memory.get_phase(), "vulnerability_assessment")
+
+    def test_models_command_actions(self):
+        from unittest.mock import patch
+
+        # 1. Plain /models status check
+        with patch("nex.cli.print_models_status") as mock_print:
+            self.repl.handle_slash_command("/models")
+            self.assertTrue(mock_print.called)
+
+        # 2. /m status check shortcut
+        with patch("nex.cli.print_models_status") as mock_print:
+            self.repl.handle_slash_command("/m")
+            self.assertTrue(mock_print.called)
+
+        # 3. /models download
+        with patch("nex.cli.download_models") as mock_dl:
+            self.repl.handle_slash_command("/models download")
+            self.assertTrue(mock_dl.called)
+
+        # 4. /m download shortcut
+        with patch("nex.cli.download_models") as mock_dl:
+            self.repl.handle_slash_command("/m download")
+            self.assertTrue(mock_dl.called)
+
+        # 5. /models install runtime
+        with patch("nex.cli.install_llama_cpp_runtime") as mock_inst:
+            self.repl.handle_slash_command("/models install")
+            self.assertTrue(mock_inst.called)

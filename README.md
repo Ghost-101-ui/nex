@@ -129,19 +129,37 @@ pip install -e .           # installs nex entrypoint + pyyaml
 pip install llama-cpp-python
 ```
 
-### GGUF model weights (offline)
+### Local Models & Inference Setup
 
-Place pre-downloaded weights in the `models/` directory:
+You can check, download, and install models directly through the NEX CLI or interactive REPL:
 
+#### 1. Check Model Status
+```bash
+nex models                     # or in REPL: /models (or /m)
 ```
-models/
-  qwen3-0.6b-instruct.Q4_K_M.gguf   ← default single-mode model
-  functiongemma-270m-it.Q8_0.gguf   ← optional dual-mode tool caller
+
+#### 2. Download GGUF Model Weights (Automatic)
+Download the default GGUF model weights directly into `models/`:
+```bash
+nex models download            # or in REPL: /m download
 ```
 
-When offline, download from HuggingFace on a machine with internet access and
-transfer via USB.  NEX operates without models — the heuristic fallback
-handles all standard use-cases.
+#### 3. Install Local Inference Runtime
+Install `llama-cpp-python` into the active Python environment:
+```bash
+nex models install             # or in REPL: /m install
+```
+
+#### 4. Offline / Air-Gapped Setup
+If running in an isolated CTF lab or offline Kali environment without internet:
+1. Download the `.gguf` file on any connected host.
+2. Copy it to the `models/` directory:
+   ```
+   models/
+     qwen3-0.6b-instruct.Q4_K_M.gguf   ← primary planner model
+     functiongemma-270m-it.Q8_0.gguf   ← optional dual-mode tool caller
+   ```
+3. NEX also includes a deterministic heuristic engine that functions **completely offline** even without GGUF files.
 
 ---
 
@@ -233,6 +251,9 @@ NEX organizes tools by authorized engagement phase. You can switch phases instan
 | `/scope [target]` | View authorized scope or add a new target |
 | `/findings` | List all structured findings extracted by Summarizer |
 | `/tools` | List tools available for the current phase |
+| `/models` or `/m` | Check GGUF model files and inference runtime status |
+| `/models download` or `/m download` | Download default GGUF model weights into `models/` |
+| `/models install` or `/m install` | Install `llama-cpp-python` inference engine via pip |
 | `/exit` | Exit the session |
 
 ---

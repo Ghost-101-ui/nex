@@ -6,6 +6,7 @@ version: "1.0"
 models:
   # Primary reasoning and planning model (GGUF path)
   planner_model_path: "models/qwen3-0.6b-instruct.Q4_K_M.gguf"
+  planner_download_url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
   # Secondary structured tool caller (used in dual mode)
   tool_caller_model_path: "models/functiongemma-270m-it.Q8_0.gguf"
   # Default dual-mode flag (true = Qwen3 reasons + FunctionGemma structures request)

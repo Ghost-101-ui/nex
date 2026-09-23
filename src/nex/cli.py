@@ -18,6 +18,7 @@ from .catalog import Catalog, CatalogValidationError
 from .config import find_project_root, load_config
 from .controller import Controller, ControllerError, ExecutionResult
 from .memory import SessionMemory
+from .models_manager import download_models, install_llama_cpp_runtime
 from .planner import Planner, PlannerError
 
 
@@ -133,9 +134,12 @@ def print_models_status(status: dict[str, Any]) -> None:
 
     print("-" * 60)
     print(f"  Current Mode:       {CYAN}{BOLD}{status['mode']}{RESET}")
+    print(f"\n  {BOLD}Quick Commands:{RESET}")
+    print(f"    * Download GGUF weights:      {CYAN}nex models download{RESET}  (or in REPL: {CYAN}/m download{RESET})")
+    print(f"    * Install inference engine:   {CYAN}nex models install{RESET}   (or in REPL: {CYAN}/m install{RESET})")
+    print(f"    * Offline/Manual copy:        Place .gguf file into {CYAN}models/{RESET}")
     if not status["qwen_exists"] or not status["llama_cpp_installed"]:
         print(f"\n  {DIM}Note: NEX runs completely offline using the deterministic fallback engine.{RESET}")
-        print(f"  {DIM}To use local GGUF models, place .gguf files in the models/ directory.{RESET}")
     print("=" * 60 + "\n")
 
 
@@ -339,8 +343,13 @@ class NexREPL:
         elif cmd in ("/models", "/m"):
             project_root = find_project_root()
             config_data = load_config()
-            status = check_models_status(project_root, config_data)
-            print_models_status(status)
+            if arg in ("download", "d"):
+                download_models(project_root, config_data)
+            elif arg in ("install", "i"):
+                install_llama_cpp_runtime()
+            else:
+                status = check_models_status(project_root, config_data)
+                print_models_status(status)
 
         elif cmd in ("/help", "/?"):
             print(f"""
@@ -474,7 +483,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("tools", help="List tools defined in the catalog")
 
     # models subcommand
-    subparsers.add_parser("models", help="Check local GGUF model files and inference engine status")
+    models_parser = subparsers.add_parser("models", help="Check, download, or install local GGUF models")
+    models_parser.add_argument("action", nargs="?", choices=["status", "download", "install"], default="status", help="Action: status, download, or install")
+    models_parser.add_argument("--download", action="store_true", help="Download default GGUF model weights into models/ directory")
+    models_parser.add_argument("--install", action="store_true", help="Install llama-cpp-python inference runtime via pip")
 
     # status subcommand
     status_parser = subparsers.add_parser("status", help="Show system status and session details")
@@ -539,9 +551,22 @@ def main() -> None:
         sys.exit(0)
 
     if args.subcommand == "models":
-        model_status = check_models_status(project_root, config_data)
-        print_models_status(model_status)
-        sys.exit(0)
+        action = args.action
+        if getattr(args, "download", False):
+            action = "download"
+        elif getattr(args, "install", False):
+            action = "install"
+
+        if action == "download":
+            download_models(project_root, config_data)
+            sys.exit(0)
+        elif action == "install":
+            install_llama_cpp_runtime()
+            sys.exit(0)
+        else:
+            model_status = check_models_status(project_root, config_data)
+            print_models_status(model_status)
+            sys.exit(0)
 
     if args.subcommand == "status":
         status_info = {
