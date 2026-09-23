@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import shlex
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,14 @@ try:
     import readline
 except ImportError:
     readline = None
+
+# Ensure stdout supports UTF-8 characters (especially on Windows legacy codepages)
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from . import __version__
 from .catalog import Catalog, CatalogValidationError
@@ -143,20 +153,84 @@ def print_models_status(status: dict[str, Any]) -> None:
     print("=" * 60 + "\n")
 
 
-def print_banner(phase: str, dual: bool, scope_count: int, target: str | None = None, phases: list[str] | None = None) -> None:
+def gradient_green(text: str) -> None:
+    """Print text line-by-line in a green gradient (dark -> bright)."""
+    shades = [22, 28, 34, 40, 46, 82, 118]  # ANSI 256-color green ramp
+    lines = text.strip("\n").split("\n")
+    for i, line in enumerate(lines):
+        shade = shades[min(i, len(shades) - 1)]
+        try:
+            print(f"\033[38;5;{shade}m{line}{RESET}")
+        except UnicodeEncodeError:
+            # Fallback if terminal cannot print unicode block characters
+            safe_line = line.encode("ascii", "replace").decode("ascii")
+            print(f"\033[38;5;{shade}m{safe_line}{RESET}")
+
+
+def type_out(text: str, delay: float = 0.015, color: str = "\033[92m") -> None:
+    """Type out text character-by-character with customizable delay."""
+    is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+    for ch in text:
+        sys.stdout.write(f"{color}{ch}{RESET}")
+        sys.stdout.flush()
+        if is_tty and delay > 0:
+            time.sleep(delay)
+    print()
+
+
+def boot_sequence(skip_delay: bool = False) -> None:
+    """Simulate system initialization and module mounting sequence."""
+    steps = [
+        "Initializing NEX core...",
+        "Loading Qwen3 0.6B reasoning model...",
+        "Mounting tool catalog (5 phases)...",
+        "Starting Controller/Gate...",
+        "Session memory: ready.",
+    ]
+    is_tty = hasattr(sys.stdout, "isatty") and sys.stdout.isatty() and not skip_delay
+    for step in steps:
+        type_out(f"[NEX] {step}", delay=0.01 if is_tty else 0.0)
+        if is_tty:
+            time.sleep(random.uniform(0.04, 0.12))
+    print()
+
+
+def print_logo() -> None:
+    """Display stylized NEX logo in 256-color green gradient."""
+    logo = r"""
+ ███╗   ██╗███████╗██╗  ██╗
+ ████╗  ██║██╔════╝╚██╗██╔╝
+ ██╔██╗ ██║█████╗   ╚███╔╝
+ ██║╚██╗██║██╔══╝   ██╔██╗
+ ██║ ╚████║███████╗██╔╝ ██╗
+ ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝
+"""
+    gradient_green(logo)
+    try:
+        print(f"{BOLD}\033[92m   Navigate · Execute · eXplore{RESET}")
+        print(f"\033[90m   CyberEDT offline CTF agent — v{__version__}{RESET}\n")
+    except UnicodeEncodeError:
+        print(f"{BOLD}\033[92m   Navigate * Execute * eXplore{RESET}")
+        print(f"\033[90m   CyberEDT offline CTF agent - v{__version__}{RESET}\n")
+
+
+def print_banner(
+    phase: str,
+    dual: bool,
+    scope_count: int,
+    target: str | None = None,
+    phases: list[str] | None = None,
+    skip_boot: bool = False,
+) -> None:
+    if not skip_boot:
+        boot_sequence()
+        print_logo()
+
     target_display = f"{GREEN}{BOLD}{target}{RESET}" if target else f"{DIM}None (set with /target <ip> or /t <ip>){RESET}"
     phase_num_prefix = ""
     if phases and phase in phases:
         phase_num_prefix = f"[{phases.index(phase) + 1}] "
     banner = (
-        f"{CYAN}{BOLD}\n"
-        f"  _   _ _______  _  {RESET}\n"
-        f"{CYAN}{BOLD} | \\ | | ____\\ \\/ /  {RESET}\n"
-        f"{CYAN}{BOLD} |  \\| |  _|  \\  /   {RESET}\n"
-        f"{CYAN}{BOLD} | |\\  | |___ /  \\   {RESET}\n"
-        f"{CYAN}{BOLD} |_| \\_|_____/_/\\_\\  {RESET}\n"
-        f"{DIM}  CyberEDT NEX v{__version__} | Navigate / Execute / eXplore{RESET}\n"
-        f"{DIM}  Authorized Security Training Assistant (Offline Lab Mode){RESET}\n"
         f"  {'-'*58}\n"
         f"  Phase:     {GREEN}{BOLD}{phase_num_prefix}{phase}{RESET}\n"
         f"  Target:    {target_display}\n"
@@ -181,17 +255,26 @@ class NexREPL:
         planner: Planner,
         controller: Controller,
         dual_mode: bool = False,
+        fast_boot: bool = False,
     ):
         self.catalog = catalog
         self.memory = memory
         self.planner = planner
         self.controller = controller
         self.dual_mode = dual_mode
+        self.fast_boot = fast_boot
         self.last_result: ExecutionResult | None = None
 
     def run(self) -> None:
         scope = self.memory.get_scope()
-        print_banner(self.memory.get_phase(), self.dual_mode, len(scope), self.memory.get_target(), self.catalog.phases)
+        print_banner(
+            self.memory.get_phase(),
+            self.dual_mode,
+            len(scope),
+            self.memory.get_target(),
+            self.catalog.phases,
+            skip_boot=self.fast_boot,
+        )
 
         while True:
             current_phase = self.memory.get_phase()
@@ -468,6 +551,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Path to custom config.yaml",
     )
     parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Skip animated boot sequence on startup",
+    )
+    parser.add_argument(
         "-v", "--version",
         action="version",
         version=f"CyberEDT NEX {__version__}",
@@ -620,6 +708,7 @@ def main() -> None:
         planner=planner,
         controller=controller,
         dual_mode=args.dual or planner_cfg.get("dual_mode", False),
+        fast_boot=getattr(args, "fast", False),
     )
     repl.run()
 
